@@ -32,8 +32,47 @@ const CATEGORIES = [
     items: [['pill', 'قرص ضدبارداری'], ['painkiller', 'مسکن'], ['iron', 'آهن یا مکمل'], ['other', 'داروی دیگه']] },
   { id: 'test', name: 'تست', glyph: 'tube', color: '#5A6B7B',
     items: [['ovu_pos', 'تخمک‌گذاری مثبت'], ['ovu_neg', 'تخمک‌گذاری منفی'], ['preg_pos', 'بارداری مثبت'], ['preg_neg', 'بارداری منفی']] },
+  // Confirmed additional categories (sleep quality, urine, vulva & vagina, supplements)
+  { id: 'sleepq', name: 'کیفیت خواب', glyph: 'moon', color: '#3D4FB8', single: true,
+    items: [['great', 'عالی'], ['ok', 'معمولی'], ['restless', 'بی‌قرار'], ['woke', 'چند بار بیدار شدم'], ['bad', 'بد']] },
+  { id: 'urine', name: 'ادرار', glyph: 'drops', color: '#C99A12',
+    items: [['frequent', 'تکرر'], ['urgent', 'فوریت'], ['burning', 'سوزش'], ['leak', 'نشت'], ['normal', 'عادی']] },
+  { id: 'vulva', name: 'واژن و ناحیه‌ی تناسلی', glyph: 'sparkle', color: '#B8467A',
+    items: [['itchy', 'خارش'], ['dry', 'خشکی'], ['irritated', 'تحریک یا سوزش'], ['swollen', 'تورم'], ['odor', 'بوی غیرعادی'], ['fine', 'خوب']] },
+  { id: 'supp', name: 'مکمل‌ها', glyph: 'pill', color: '#2F8F6F',
+    items: [['iron', 'آهن'], ['folic', 'اسید فولیک'], ['vitd', 'ویتامین D'], ['magnesium', 'منیزیم'], ['omega3', 'امگا ۳'], ['multi', 'مولتی‌ویتامین']] },
+  // Mode-specific
+  { id: 'meno', name: 'گرگرفتگی و تعریق', glyph: 'flame', color: '#D9541E', modes: ['perimenopause', 'period'],
+    items: [['hot_flash', 'گرگرفتگی'], ['night_sweat', 'تعریق شبانه'], ['chills', 'لرز'], ['palpitations', 'تپش قلب'], ['brain_fog', 'مه‌آلودگی ذهن']] },
+  { id: 'fetal', name: 'حرکات جنین', glyph: 'heart', color: '#E0457B', modes: ['pregnancy'], single: true,
+    items: [['none', 'حس نکردم'], ['few', 'کم'], ['usual', 'مثل همیشه'], ['many', 'زیاد']] },
+  { id: 'preg', name: 'تجربه‌های بارداری', glyph: 'egg', color: '#C2185B', modes: ['pregnancy'],
+    items: [['nausea', 'تهوع صبحگاهی'], ['heartburn', 'سوزش سر دل'], ['swelling', 'ورم پا'], ['contractions', 'انقباض'], ['fatigue', 'خستگی'], ['backpain', 'کمردرد'], ['cravings', 'ویار']] },
 ];
 const CAT_BY_ID = Object.fromEntries(CATEGORIES.map(c => [c.id, c]));
+// Categories that only make sense in some modes. Others are available in every mode.
+CAT_BY_ID.period.modes = ['period', 'conceive', 'perimenopause'];
+CAT_BY_ID.discharge.modes = ['period', 'conceive', 'perimenopause', 'noperiod'];
+CAT_BY_ID.test.modes = ['period', 'conceive', 'perimenopause', 'pregnancy'];
+const PAIN_LEVELS = [[1, 'خفیف'], [2, 'متوسط'], [3, 'شدید']];
+
+// Tracking guidance shown next to each category (draft — not medically reviewed yet).
+const CAT_HELP = {
+  period: { what: 'میزان خونریزی هر روز، از لکه‌بینی تا زیاد.', why: 'روز اول خونریزی (نه لکه‌بینی) شروع چرخه رو مشخص می‌کنه و همه‌ی پیش‌بینی‌ها بر اساسشه.', doctor: 'اگه نوار یا تامپون در کمتر از ۱ تا ۲ ساعت پر می‌شه، پریود بیشتر از ۷ روز طول می‌کشه یا بین دو پریود خونریزی داری.' },
+  pain: { what: 'نوع درد و شدتش.', why: 'با ثبت چند چرخه، الگوی دردها و زمان تکرارشون مشخص می‌شه.', doctor: 'اگه درد با مسکن معمول بهتر نمی‌شه، کارهای روزمره رو مختل می‌کنه یا با گذشت زمان بدتر شده.' },
+  emotion: { what: 'احساسات غالب امروز.', why: 'نشون می‌ده احساسات خاصی در زمان‌های مشخصی از چرخه بیشتر ثبت می‌شن یا نه (همزمانی، نه علت).', doctor: 'اگه غم، اضطراب یا تحریک‌پذیری شدید زندگی روزمره رو مختل می‌کنه.' },
+  energy: { what: 'سطح انرژی کلی امروز.', why: 'برای برنامه‌ریزی روزهای پرکار و کم‌کار کمک می‌کنه.', doctor: 'اگه خستگی شدید و طولانی‌مدت داری، مخصوصاً همراه با خونریزی زیاد.' },
+  sleep: { what: 'مدت خواب شب قبل.', why: 'تغییرات خواب در فازهای مختلف چرخه رایجه.', doctor: 'اگه بی‌خوابی طولانی‌مدت داری.' },
+  sleepq: { what: 'کیفیت خواب شب قبل.', why: 'کنار مدت خواب، نشون می‌ده خواب چقدر آرام بوده.', doctor: 'اگه خواب بی‌کیفیت مدت زیادی ادامه داره.' },
+  discharge: { what: 'ظاهر ترشحات واژن.', why: 'ترشحات شفاف و کشسان معمولاً نزدیک تخمک‌گذاری دیده می‌شه.', doctor: 'اگه بو، رنگ (سبز، خاکستری) یا خارش غیرعادی داری.' },
+  urine: { what: 'تغییرات ادرار.', why: 'برخی تغییرات با چرخه، بارداری یا یائسگی همراهن.', doctor: 'اگه سوزش ادرار، تب یا خون در ادرار داری.' },
+  vulva: { what: 'احساس‌ها و تغییرات ناحیه‌ی تناسلی.', why: 'خشکی یا تحریک ممکنه با تغییرات هورمونی همزمان باشه.', doctor: 'اگه خارش، سوزش، زخم یا بوی غیرعادی ادامه داره.' },
+  supp: { what: 'مکمل‌هایی که امروز مصرف کردی.', why: 'برای یادآوری و گفت‌وگو با پزشک.', doctor: 'قبل از شروع مکمل جدید با پزشک یا داروساز مشورت کن.' },
+  meno: { what: 'گرگرفتگی، تعریق شبانه و علائم مشابه.', why: 'در دوره‌ی پیش‌یائسگی، ثبت این علائم کنار تغییرات چرخه برای گفت‌وگو با پزشک مفیده.', doctor: 'اگه علائم شدیدن یا خواب و کار روزانه رو مختل می‌کنن.' },
+  fetal: { what: 'حس کلی حرکات جنین امروز.', why: 'آشنایی با الگوی معمول حرکات.', doctor: 'اگه حرکات کمتر از معمول شده یا تغییر کرده، همون روز با مرکز درمانی یا ماما تماس بگیر.' },
+  preg: { what: 'تجربه‌های رایج بارداری.', why: 'برای پیگیری و گفت‌وگو در ویزیت‌ها.', doctor: 'خونریزی، درد شدید، سردرد شدید، تاری دید یا ورم ناگهانی نیاز به مراجعه‌ی فوری دارن.' },
+  test: { what: 'نتیجه‌ی تست‌های خانگی.', why: 'تست تخمک‌گذاری مثبت روی تخمین تخمک‌گذاری همین چرخه اثر می‌ذاره.', doctor: 'بعد از تست بارداری مثبت، برای مراقبت‌های بارداری مراجعه کن.' },
+};
 
 // Phase guide. `her` = self-care, `him` = how the partner can help.
 const PHASES = {
@@ -109,11 +148,48 @@ const CARE_KIT = [
   ['flowers', 'یه گل یا سورپرایز کوچیک'],
 ];
 
+// Five modes. Switching is stored per day in modeHistory so older data keeps its meaning.
 const MODES = {
-  track: { name: 'پیگیری چرخه', glyph: 'cycle', color: '#0C7A92', desc: 'پیش‌بینی پریود، PMS و روزهای باروری' },
-  avoid: { name: 'بارداری نمی‌خوایم', glyph: 'shield', color: '#E13336', desc: 'روزهای پرخطر رو برجسته‌تر نشون بده' },
-  conceive: { name: 'اقدام به بارداری', glyph: 'egg', color: '#E8A013', desc: 'روزهای باروری و شانس بارداری رو نشون بده' },
+  period: { name: 'پیگیری پریود', glyph: 'cycle', color: '#0C7A92', desc: 'پیش‌بینی پریود، PMS، روزهای باروری و تحلیل چرخه' },
+  conceive: { name: 'اقدام به بارداری', glyph: 'egg', color: '#E8A013', desc: 'روزهای پربارورتر و راهنمای زمان‌بندی' },
+  pregnancy: { name: 'بارداری', glyph: 'heart', color: '#C2185B', desc: 'هفته و سه‌ماهه‌ی بارداری، ثبت حرکات و تجربه‌ها' },
+  perimenopause: { name: 'پیش‌یائسگی', glyph: 'flame', color: '#D9541E', desc: 'تغییرات چرخه و علائمی مثل گرگرفتگی' },
+  noperiod: { name: 'پیگیری بدون پریود', glyph: 'sparkle', color: '#7B5CD6', desc: 'ثبت علائم در بازه‌هایی که خودت تعیین می‌کنی' },
 };
+const LEGACY_MODES = { track: 'period', avoid: 'period' };
+
+// Estimated subphases (estimate from dates — not a hormone measurement). Draft content.
+const SUBPHASES = {
+  early_follicular: { name: 'اوایل فاز فولیکولار', hormones: 'استروژن و پروژسترون پایین‌ان و پوشش رحم دفع می‌شه.', may: 'خستگی، دل‌درد و نیاز به استراحت بیشتر رایجه.', track: ['خونریزی', 'درد', 'انرژی'] },
+  late_follicular: { name: 'اواخر فاز فولیکولار', hormones: 'استروژن رو به افزایشه.', may: 'خیلی‌ها انرژی، تمرکز و حال بهتری رو گزارش می‌کنن.', track: ['انرژی', 'ذهن', 'ترشحات'] },
+  ovulation: { name: 'حوالی تخمک‌گذاری', hormones: 'استروژن به اوج می‌رسه و هورمون LH ناگهان بالا می‌ره.', may: 'ترشحات شفاف‌تر، میل جنسی بیشتر و گاهی درد خفیف یه‌طرفه.', track: ['ترشحات', 'تست تخمک‌گذاری', 'دمای پایه'] },
+  early_luteal: { name: 'اوایل فاز لوتئال', hormones: 'پروژسترون بالا می‌ره و دمای پایه‌ی بدن کمی افزایش پیدا می‌کنه.', may: 'آرامش بیشتر یا کمی خواب‌آلودگی.', track: ['خواب', 'انرژی', 'دمای پایه'] },
+  mid_luteal: { name: 'اواسط فاز لوتئال', hormones: 'پروژسترون در بالاترین حده.', may: 'اشتهای بیشتر و حساسیت سینه برای بعضی‌ها.', track: ['هوس', 'گوارش', 'احساسات'] },
+  late_luteal: { name: 'اواخر فاز لوتئال', hormones: 'اگه بارداری رخ نده، استروژن و پروژسترون افت می‌کنن.', may: 'علائم PMS مثل نوسان خلق، نفخ یا سردرد.', track: ['احساسات', 'درد', 'خواب'] },
+};
+
+// Reminder types. `custom: false` = fixed text/time (daily check-in).
+const REMINDER_TYPES = [
+  { id: 'period_soon', name: 'نزدیک شدن پریود', def: 'پریودت حدود {n} روز دیگه شروع می‌شه.', days: 2, time: '09:00' },
+  { id: 'period_due', name: 'روز پیش‌بینی پریود', def: 'طبق پیش‌بینی، پریودت امروز شروع می‌شه.', time: '09:00' },
+  { id: 'period_late', name: 'تأخیر پریود', def: 'پریود طبق پیش‌بینی شروع نشده. اگه شروع شده، ثبتش کن.', days: 2, time: '10:00' },
+  { id: 'fertile_soon', name: 'نزدیک شدن روزهای باروری', def: 'روزهای باروری از فردا شروع می‌شن.', time: '09:00' },
+  { id: 'pill', name: 'قرص ضدبارداری', def: 'وقت قرصته.', time: '21:00' },
+  { id: 'stats_change', name: 'تغییر میانگین‌ها', def: 'میانگین طول چرخه‌ات تغییر کرد.', time: '09:00' },
+  { id: 'daily_checkin', name: 'ثبت روزانه', def: 'امروز چه حسی داری؟ چند ثانیه وقت بذار و ثبت کن.', time: '20:00', custom: false },
+  { id: 'phase_change', name: 'شروع فاز جدید', def: 'وارد {phase} شدی.', time: '09:00' },
+];
+const DISCREET_TEXT = 'یادآوری Moon&Us';
+
+// Pregnancy: trimester-level general information only. Weekly development content
+// requires medically reviewed material and is not included (see FEATURES.md).
+const PREG_TRIMESTERS = {
+  1: { name: 'سه‌ماهه‌ی اول', info: 'هفته‌ی ۱ تا ۱۳. تهوع، خستگی و حساسیت سینه رایجه. مراقبت‌های دوران بارداری رو زود شروع کن.' },
+  2: { name: 'سه‌ماهه‌ی دوم', info: 'هفته‌ی ۱۴ تا ۲۷. خیلی‌ها انرژی بیشتری دارن و معمولاً حرکات جنین در این دوره حس می‌شه.' },
+  3: { name: 'سه‌ماهه‌ی سوم', info: 'هفته‌ی ۲۸ تا تولد. به تغییر حرکات جنین توجه کن و برنامه‌ی زایمان رو با تیم درمان هماهنگ کن.' },
+};
+const POSTPARTUM_WEEKS = 6;
+const POSTPARTUM_INFO = 'شش هفته‌ی اول بعد از زایمان: استراحت، تغذیه، خونریزی بعد از زایمان (لوکیا) که کم‌کم کم می‌شه، و ویزیت پس از زایمان. خونریزی خیلی زیاد، تب، درد شدید یا غم و اضطراب شدید نیاز به مراجعه دارن.';
 
 const ARTICLES = [
   { id: 'phases', tint: 'var(--sky)', title: 'چرخه قاعدگی به زبان ساده: ۴ فاز', min: 4, body: `
@@ -171,3 +247,39 @@ const ARTICLES = [
 <ul><li>خونریزی خیلی زیاد (پر شدن نوار در کمتر از ۱ تا ۲ ساعت، چند ساعت پشت سر هم)</li><li>پریود طولانی‌تر از ۷ روز</li><li>چرخه‌های کوتاه‌تر از ۲۱ یا بلندتر از ۳۵ روز به‌طور مکرر</li><li>قطع پریود به مدت ۳ ماه یا بیشتر (بدون بارداری)</li><li>خونریزی بین دو پریود یا بعد از رابطه</li><li>درد شدیدی که با مسکن بهتر نمی‌شه</li><li>علائم روحی شدید قبل از پریود</li></ul>
 <div class="callout">از بخش «تحلیل»، خلاصه چرخه‌ها رو کپی کنید و برای پزشک ببرید.</div>` },
 ];
+
+// Extra library entries for the newer modes (drafts).
+ARTICLES.push(
+  { id: 'conceive', tint: 'var(--peach)', title: 'اقدام به بارداری: زمان‌بندی', min: 3, body: `
+<p>بیشترین احتمال بارداری مربوط به چند روز قبل از تخمک‌گذاری و خود روز تخمک‌گذاریه. اسپرم تا حدود ۵ روز زنده می‌مونه و تخمک حدود یک روز.</p>
+<h3>چند نکته‌ی عمومی</h3>
+<ul><li>در پنجره‌ی باروری، رابطه هر یک یا دو روز یک‌بار پوشش خوبی می‌ده.</li><li>تست تخمک‌گذاری و دمای پایه اختیاری‌ان؛ ثبت شروع پریود برای تخمین کافیه.</li><li>اسید فولیک رو از قبل از بارداری شروع کن (با نظر پزشک).</li></ul>
+<div class="callout">اگه زیر ۳۵ سال هستی و بعد از ۱۲ ماه، یا بالای ۳۵ سال و بعد از ۶ ماه اقدام باردار نشدی، با پزشک مشورت کن. این ابزار تشخیص ناباروری نمی‌ده.</div>` },
+  { id: 'perimenopause', tint: 'var(--peach)', title: 'پیش‌یائسگی چیه؟', min: 3, body: `
+<p>پیش‌یائسگی سال‌های قبل از یائسگیه که هورمون‌ها نوسان بیشتری دارن. چرخه‌ها ممکنه کوتاه‌تر، بلندتر یا نامنظم بشن.</p>
+<h3>علائم رایج</h3>
+<ul><li>گرگرفتگی و تعریق شبانه</li><li>تغییر خواب و خلق</li><li>تغییر در الگوی خونریزی</li></ul>
+<div class="callout">ثبت چرخه‌ها و علائم برای گفت‌وگو با پزشک مفیده. هیچ ابزاری از روی چند علامت یائسگی رو تشخیص نمی‌ده.</div>` },
+  { id: 'noperiod', tint: 'var(--sky)', title: 'پیگیری بدون پریود', min: 2, body: `
+<p>اگه به هر دلیلی پریود نمی‌شی (مثلاً به خاطر روش پیشگیری، شیردهی یا شرایط پزشکی)، هنوز می‌تونی علائم و احساساتت رو ثبت کنی.</p>
+<p>شروع هر «بازه» رو خودت انتخاب می‌کنی، مثلاً اول هر ماه یا روز تغییر دارو. بازه‌ها با هم مقایسه می‌شن، ولی تخمک‌گذاری یا باروری برای اون‌ها تخمین زده نمی‌شه.</p>` },
+);
+
+// Editorial metadata. Nothing here has been reviewed by a clinician yet, so every entry is a
+// draft: hidden from the library unless the person chooses to see drafts, and always labelled.
+const ARTICLE_META = {
+  _default: { status: 'draft', author: 'Moon&Us (نوشته‌شده با کمک هوش مصنوعی)', reviewer: null, reviewedAt: null },
+  phases: { sources: ['https://www.nhs.uk/conditions/periods/'], phases: ['period', 'follicular', 'fertile', 'luteal', 'pms'] },
+  pms: { sources: ['https://www.nhs.uk/conditions/pre-menstrual-syndrome/'], phases: ['pms'], cats: ['emotion'] },
+  cramps: { sources: ['https://www.acog.org/womens-health/faqs/dysmenorrhea-painful-periods'], phases: ['period'], cats: ['pain'] },
+  fertile: { sources: ['https://www.nhs.uk/conditions/periods/fertility-in-the-menstrual-cycle/'], phases: ['fertile', 'ovulation'], modes: ['conceive'], cats: ['discharge', 'test'] },
+  irregular: { sources: ['https://www.nhs.uk/conditions/irregular-periods/'], modes: ['perimenopause'] },
+  discharge: { sources: ['https://www.nhs.uk/conditions/vaginal-discharge/'], cats: ['discharge', 'vulva'] },
+  partner: { sources: [] },
+  food: { sources: [] },
+  doctor: { sources: ['https://www.nhs.uk/conditions/heavy-periods/'], cats: ['period', 'pain'] },
+  conceive: { sources: ['https://www.nhs.uk/pregnancy/trying-for-a-baby/'], modes: ['conceive'] },
+  perimenopause: { sources: ['https://www.nhs.uk/conditions/menopause/'], modes: ['perimenopause'], cats: ['meno'] },
+  noperiod: { sources: [], modes: ['noperiod'] },
+};
+ARTICLES.forEach(a => Object.assign(a, ARTICLE_META._default, { sources: [], phases: [], modes: [], cats: [] }, ARTICLE_META[a.id] || {}));

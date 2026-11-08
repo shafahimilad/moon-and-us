@@ -1,67 +1,108 @@
 rules_version = '2';
+// Moon&Us data layout
+//   users/{uid}                         pointer: { spaceId, role: 'her' | 'partner', name }
+//   invites/{code}                      { spaceId, ownerUid, herName, createdAt, usedBy, usedAt } single use
+//   feedback/{id}                       create-only help requests
+//   spaces/{sid}                        { ownerUid, herName, partners: { uid: {name, joinedAt, invite} }, inviteCode }
+//   spaces/{sid}/private/{doc}          owner only: settings (modes, profile, tags, reminders, pregnancy…)
+//   spaces/{sid}/logs/{day}             owner only: every observation, notes, tags, temperatures
+//   spaces/{sid}/shared/{doc}           readable by viewers: calendar projection (period days + engine settings)
+//   spaces/{sid}/couple/status          her shared mood/needs (owner writes, viewers read)
+//   spaces/{sid}/couple/kit             care-kit checklist (members)
+//   spaces/{sid}/notes/{id}             messages between the two (members)
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
-    function spaceData(sid) { return get(/databases/$(database)/documents/spaces/$(sid)).data; }
-    function isOwner(sid) { return signedIn() && spaceData(sid).ownerUid == request.auth.uid; }
-    function isMember(sid) {
-      return signedIn() && (spaceData(sid).ownerUid == request.auth.uid || spaceData(sid).partnerUid == request.auth.uid);
-    }
+    function spaceDoc(sid) { return get(/databases/$(database)/documents/spaces/$(sid)).data; }
+    function isOwner(sid) { return signedIn() && spaceDoc(sid).ownerUid == request.auth.uid; }
+    function isViewer(sid) { return signedIn() && request.auth.uid in spaceDoc(sid).partners; }
+    function isMember(sid) { return isOwner(sid) || isViewer(sid); }
+    function invitePath(code) { return /databases/$(database)/documents/invites/$(code); }
 
-    // Each person's pointer to their space
     match /users/{uid} {
       allow read, write: if signedIn() && request.auth.uid == uid;
     }
 
-    // Invite links: anyone holding the code can read it (shows her name on the invite page)
     match /invites/{code} {
       allow get: if true;
+      allow list: if false;
       allow create: if signedIn()
         && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.usedBy == null
         && isOwner(request.resource.data.spaceId);
+      // claimed once, by someone other than the owner
+      allow update: if signedIn()
+        && resource.data.usedBy == null
+        && request.auth.uid != resource.data.ownerUid
+        && request.resource.data.usedBy == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedBy', 'usedAt']);
       allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
     }
 
-    // One space per couple. She owns it; the partner can read it.
+    match /feedback/{id} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 4000;
+    }
+
     match /spaces/{sid} {
       allow read: if signedIn()
-        && (resource.data.ownerUid == request.auth.uid || resource.data.partnerUid == request.auth.uid);
+        && (resource.data.ownerUid == request.auth.uid || request.auth.uid in resource.data.partners);
 
       allow create: if signedIn()
         && request.resource.data.ownerUid == request.auth.uid
-        && request.resource.data.partnerUid == null;
+        && request.resource.data.partners.size() == 0;
 
       allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
 
       allow update: if signedIn() && (
-        // her: anything, but ownership can't change
+        // owner: anything except ownership
         (resource.data.ownerUid == request.auth.uid
           && request.resource.data.ownerUid == resource.data.ownerUid)
         ||
-        // partner: care kit, own name, or leaving
-        (resource.data.partnerUid == request.auth.uid
-          && request.resource.data.ownerUid == resource.data.ownerUid
-          && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['kit', 'partnerName', 'partnerUid', 'joinedWith', 'joinedAt'])
-          && (request.resource.data.partnerUid == request.auth.uid || request.resource.data.partnerUid == null))
+        // viewer leaving: removes only their own entry
+        (request.auth.uid in resource.data.partners
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['partners'])
+          && request.resource.data.partners.diff(resource.data.partners).affectedKeys().hasOnly([request.auth.uid])
+          && !(request.auth.uid in request.resource.data.partners))
         ||
-        // accepting an invite: only when nobody is connected yet and the invite belongs to this space
-        (resource.data.partnerUid == null
-          && request.resource.data.partnerUid == request.auth.uid
-          && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['partnerUid', 'partnerName', 'joinedWith', 'joinedAt'])
-          && get(/databases/$(database)/documents/invites/$(request.resource.data.joinedWith)).data.spaceId == sid)
+        // accepting an unused invite for this space, claimed in the same batch
+        (request.auth.uid != resource.data.ownerUid
+          && !(request.auth.uid in resource.data.partners)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['partners'])
+          && request.resource.data.partners.diff(resource.data.partners).affectedKeys().hasOnly([request.auth.uid])
+          && request.resource.data.partners[request.auth.uid].keys().hasOnly(['name', 'joinedAt', 'invite'])
+          && get(invitePath(request.resource.data.partners[request.auth.uid].invite)).data.spaceId == sid
+          && get(invitePath(request.resource.data.partners[request.auth.uid].invite)).data.usedBy == null
+          && getAfter(invitePath(request.resource.data.partners[request.auth.uid].invite)).data.usedBy == request.auth.uid)
       );
 
+      match /private/{doc} {
+        allow read, write: if isOwner(sid);
+      }
       match /logs/{day} {
+        allow read, write: if isOwner(sid);
+      }
+      match /shared/{doc} {
         allow read: if isMember(sid);
         allow write: if isOwner(sid);
       }
-
+      match /couple/status {
+        allow read: if isMember(sid);
+        allow write: if isOwner(sid);
+      }
+      match /couple/kit {
+        allow read, write: if isMember(sid);
+      }
       match /notes/{noteId} {
         allow read: if isMember(sid);
-        allow create: if isMember(sid) && request.resource.data.uid == request.auth.uid;
+        allow create: if isMember(sid)
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() <= 1000;
         allow delete: if isOwner(sid) || (isMember(sid) && resource.data.uid == request.auth.uid);
       }
     }

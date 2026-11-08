@@ -1,0 +1,16 @@
+{
+  "name": "moon-and-us",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Moon&Us — period and cycle tracker for two",
+  "scripts": {
+    "test": "node --test tests/engine.test.cjs",
+    "test:rules": "node node_modules/firebase-tools/lib/bin/firebase.js emulators:exec --only firestore --project demo-moonus \"node --test tests/rules.test.mjs\"",
+    "serve": "python -m http.server 5173 --bind 127.0.0.1"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.0.0",
+    "firebase-tools": "^14.0.0"
+  }
+}
