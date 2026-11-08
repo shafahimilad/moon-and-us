@@ -24,12 +24,12 @@ const emptyState = () => ({
   reminders: JSON.parse(JSON.stringify(DEFAULT_REMINDERS)),
   logs: {}, status: null, kit: { u: 0, items: {} }, notes: [],
   herName: '', partners: {}, inviteCode: null, onboarded: false,
-  shared: null, ovObserved: [],
+  shared: null, ovObserved: [], gifts: [], requests: [],
 });
 
 let S = emptyState();
 let ME = { uid: null, role: 'her', spaceId: null, name: '', email: '' };
-let P = { theme: 'light', calendar: 'persian', pin: null, showDrafts: false, discreet: false };
+let P = { theme: 'auto', calendar: 'persian', pin: null, showDrafts: false, discreet: false, installSeen: false };
 try { P = { ...P, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch (e) {}
 
 let screen = 'boot';
@@ -41,7 +41,8 @@ let unwatch = null;
 let calAnchor = todayDate(), calEdit = false, calSel = toKey(todayDate()), calFilters = [];
 let compareSel = [];
 let rep = { personal: false, heat: true, history: true };
-let onb = { step: 0, name: '', mode: 'period', picked: null, unknown: false, cycle: 28, period: 5 };
+const freshOnb = () => ({ step: 0, account: null, consent: { terms: false, privacy: false, health: false }, goals: [], mode: 'period', name: '', birthYear: 1998, hormonal: null, picked: null, unknown: false, cycle: 28, period: 5, code: '', pname: '', codeError: '' });
+let onb = freshOnb();
 let logSearch = '', helpOpen = null;
 let unlocked = false;
 try { unlocked = sessionStorage.getItem('moonus.unlocked') === '1'; } catch (e) {}
@@ -90,7 +91,9 @@ function download(name, content, type) {
   document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 function applyPrefs() {
-  if (P.theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark'); else document.documentElement.removeAttribute('data-theme');
+  const dark = P.theme === 'dark' || (P.theme === 'auto' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+  if (dark) document.documentElement.setAttribute('data-theme', 'dark'); else document.documentElement.removeAttribute('data-theme');
+  const tc = document.querySelector('meta[name=theme-color]'); if (tc) tc.content = dark ? '#1F1E1C' : '#FBF9F6';
   if (Cal.type !== P.calendar) { Cal.type = P.calendar; Cal._fmt = {}; }
 }
 const AUTH_ERR = {
@@ -148,6 +151,7 @@ const GLYPHS = {
 };
 const glyph = (name, color, cls = 'ic') => `<span class="${cls}" style="background:${color}"><svg viewBox="0 0 24 24" fill="#fff" aria-hidden="true">${GLYPHS[name] || ''}</svg></span>`;
 function logo(size = '') {
+  if (size === 'mark') return `<svg viewBox="0 0 40 40" class="mark" aria-hidden="true"><path d="M20 9.75A11 11 0 0 1 20 30.25A11 11 0 0 1 20 9.75Z" fill="#FFD3CC"/><circle cx="15.5" cy="20" r="11" fill="none" stroke="#fff" stroke-width="1.7"/><circle cx="24.5" cy="20" r="11" fill="none" stroke="#fff" stroke-width="1.7"/></svg>`;
   return `<span class="logo ${size}" aria-label="Moon&Us"><svg viewBox="0 0 40 40" aria-hidden="true">
     <path d="M20 9.75A11 11 0 0 1 20 30.25A11 11 0 0 1 20 9.75Z" fill="var(--coral)"/>
     <circle cx="15.5" cy="20" r="11" fill="none" stroke="currentColor" stroke-width="1.7"/>
@@ -193,6 +197,20 @@ const DB = {
     if (CLOUD) Cloud.addNote(ME.spaceId, n).catch(syncErr);
     else { S.notes.push({ id: Date.now().toString(36), ...n }); saveCache(); scheduleRender(); }
   },
+  addGift(g) {
+    const doc = { ...g, uid: ME.uid || 'local', fromName: ME.name || '', at: Date.now(), openedAt: null, redeemedAt: null, reaction: null };
+    if (CLOUD) return Cloud.addItem(ME.spaceId, 'gifts', doc).catch(syncErr);
+    S.gifts.push({ id: 'g' + Date.now().toString(36), ...doc }); saveCache(); scheduleRender();
+  },
+  updateGift(id, patch) { S.gifts = S.gifts.map(g => g.id === id ? { ...g, ...patch } : g); saveCache(); scheduleRender(); if (CLOUD) Cloud.updateItem(ME.spaceId, 'gifts', id, patch).catch(syncErr); },
+  deleteGift(id) { S.gifts = S.gifts.filter(g => g.id !== id); saveCache(); scheduleRender(); if (CLOUD) Cloud.deleteItem(ME.spaceId, 'gifts', id).catch(syncErr); },
+  addRequest(kind) {
+    const doc = { kind, uid: ME.uid || 'local', at: Date.now(), status: 'open', ackAt: null };
+    if (CLOUD) return Cloud.addItem(ME.spaceId, 'requests', doc).catch(syncErr);
+    S.requests.push({ id: 'r' + Date.now().toString(36), ...doc }); saveCache(); scheduleRender();
+  },
+  updateRequest(id, patch) { S.requests = S.requests.map(r => r.id === id ? { ...r, ...patch } : r); saveCache(); scheduleRender(); if (CLOUD) Cloud.updateItem(ME.spaceId, 'requests', id, patch).catch(syncErr); },
+  deleteRequest(id) { S.requests = S.requests.filter(r => r.id !== id); saveCache(); scheduleRender(); if (CLOUD) Cloud.deleteItem(ME.spaceId, 'requests', id).catch(syncErr); },
   deleteNote(id) { S.notes = S.notes.filter(n => n.id !== id); saveCache(); scheduleRender(); if (CLOUD) Cloud.deleteNote(ME.spaceId, id).catch(syncErr); },
 };
 function afterDataChange() { publishShared(); scheduleReminders(); }
@@ -212,8 +230,9 @@ function setMode(m, from = toKey(todayDate()), extra = {}) {
   DB.settings({ modeHistory: h, ...extra });
 }
 
+let giftsLoaded = false, requestsLoaded = false;
 function startWatch() {
-  stopWatch();
+  stopWatch(); giftsLoaded = false; requestsLoaded = false;
   const onError = e => { console.error('watch', e && e.code); if (e && e.code === 'permission-denied') spaceGone(); };
   const common = {
     onSpace: d => {
@@ -225,6 +244,21 @@ function startWatch() {
     onStatus: d => { S.status = d && d.date ? d : null; saveCache(); scheduleRender(); },
     onKit: d => { S.kit = d || { u: 0, items: {} }; saveCache(); scheduleRender(); },
     onNotes: notes => { S.notes = notes; saveCache(); scheduleRender(); },
+    onGifts: gifts => {
+      const known = new Set((S.gifts || []).map(g => g.id)); const first = !giftsLoaded; giftsLoaded = true;
+      S.gifts = gifts; saveCache(); scheduleRender();
+      if (!first && isHer()) gifts.filter(g => !known.has(g.id) && g.uid !== ME.uid).forEach(g => notify('Moon&Us', P.discreet ? DISCREET_TEXT : `${g.fromName || 'یه نفر'} یه چیزی برات گذاشت`, 'gift-' + g.id));
+    },
+    onRequests: reqs => {
+      const prev = Object.fromEntries((S.requests || []).map(r => [r.id, r])); const first = !requestsLoaded; requestsLoaded = true;
+      S.requests = reqs; saveCache(); scheduleRender();
+      if (first) return;
+      for (const r of reqs) {
+        const R = REQ_BY_ID[r.kind] || [, 'درخواست'];
+        if (!isHer() && !prev[r.id]) notify(`${S.herName || 'Moon&Us'}`, P.discreet ? DISCREET_TEXT : R[1], 'req-' + r.id);
+        if (isHer() && prev[r.id] && prev[r.id].status !== r.status && r.status !== 'open') notify('Moon&Us', P.discreet ? DISCREET_TEXT : `${pname()}: ${REQ_STATUS[r.status]} (${R[1]})`, 'ack-' + r.id + r.status);
+      }
+    },
     onError,
   };
   if (isHer()) {
@@ -336,27 +370,28 @@ function render() {
 // Welcome, auth, invite, onboarding
 // =================================================================
 function welcomeView() {
-  const feat = [
-    ['cycle', '#0C7A92', 'علائم چرخه رو در چند ثانیه ثبت کن'], ['sun', '#F26B1D', 'ببین چرخه چطور روی حالت اثر می‌ذاره'],
-    ['drop', '#E13336', 'بدون پریود، PMS و تخمک‌گذاری کی میاد'], ['sparkle', '#9A6CC6', 'علائم رو قبل از اومدنشون پیش‌بینی کن'],
-    ['egg', '#3B6FD8', 'روزهای باروریت رو بشناس'], ['heart', '#C2185B', 'پارتنرت رو همراه کن تا بدونه چطور کنارت باشه'],
+  // Three full-bleed intro slides, swipeable (scroll-snap). Written only for her.
+  const tiles = [['bolt', '#E0457B', 'سردرد'], ['leaf', '#4A6FD0', 'نفخ'], ['sun', '#E8730C', 'پرانرژی'], ['flame', '#0E8A70', 'میل زیاد'], ['heart', '#4A6FD0', 'حساسیت سینه'], ['run', '#0E8A70', 'دویدن'], ['cookie', '#E8730C', 'هوس شیرینی'], ['moon', '#B8467A', 'خواب بد']];
+  const miniWheel = () => {
+    const R = 120, W = 24; const arc = (a0, a1, c) => { const p = a => [(R * Math.cos((a - 90) * Math.PI / 180)).toFixed(1), (R * Math.sin((a - 90) * Math.PI / 180)).toFixed(1)]; const [x0, y0] = p(a0), [x1, y1] = p(a1); return `<path d="M${x0} ${y0} A${R} ${R} 0 0 1 ${x1} ${y1}" stroke="${c}" stroke-width="${W}" stroke-linecap="round" fill="none"/>`; };
+    return `<svg viewBox="-160 -160 320 320" class="intro-wheel" aria-hidden="true"><circle r="${R}" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="${W}"/>${arc(8, 60, '#FF4D41')}${arc(130, 205, '#16A3BF')}${arc(300, 345, '#C9AEE6')}<circle cx="${(R * Math.cos(160 * Math.PI / 180 - Math.PI / 2)).toFixed(1)}" cy="${(R * Math.sin(160 * Math.PI / 180 - Math.PI / 2)).toFixed(1)}" r="11" fill="#8FD6EE"/><g transform="translate(-120 0)"><circle r="26" fill="#2B2A28"/><text y="-6" text-anchor="middle" font-size="10" fill="#bbb" font-family="Vazirmatn">روز</text><text y="13" text-anchor="middle" font-size="19" font-weight="600" fill="#fff" font-family="Vazirmatn">۲۳</text></g><text y="-6" text-anchor="middle" font-size="22" font-weight="600" fill="#fff" font-family="Vazirmatn">۶ روز تا</text><text y="24" text-anchor="middle" font-size="22" font-weight="600" fill="#fff" font-family="Vazirmatn">پریود بعدی</text></svg>`;
+  };
+  const slides = [
+    { bg: '#0B4756', accent: '#8FDCF5', t1: 'نقطه‌ها رو به هم وصل کن.', t2: 'چرخه‌ات، رمزگشایی‌شده.', vis: miniWheel() },
+    { bg: '#5E2508', accent: '#FF8A3D', t1: 'فراتر از خونریزی.', t2: 'هرچی بیشتر ثبت کنی، بیشتر می‌دونی.', vis: `<div class="intro-tiles">${tiles.map(t => `<div>${glyph(t[0], t[1], 'tile')}<span>${t[2]}</span></div>`).join('')}</div>` },
+    { bg: '#0A4A40', accent: '#3FD0A8', t1: 'توی ذهنت نیست.', t2: 'توی داده‌هاته.', vis: `<div class="intro-stats">
+        <div class="is-card"><b>آمار چرخه</b><div class="is-row teal"><small>طول چرخه</small><span>۳۰ روز</span></div><div class="is-row brown"><small>نوسان چرخه</small><span>۸ روز</span></div></div>
+        <div class="is-card"><b>مرور دل‌درد</b><div class="is-bars">${[2, 5, 7, 5, 3, 1, 0, 0].map(h => `<i style="height:${6 + h * 7}px"></i>`).join('')}</div><div class="is-line"></div></div>
+        <div class="is-card wide"><b>شدت پریود</b>${[4, 5, 4, 5, 3].map(n => `<div class="is-flow">${Array.from({ length: n }, (_, i) => `<i class="f${i === 2 ? 3 : i === 1 || i === 3 ? 2 : 1}"></i>`).join('')}</div>`).join('')}</div></div>` },
   ];
-  return `<header class="sitebar">${logo('sm')}<button class="pill-btn deep sm" data-act="to-auth" data-mode="login">ورود</button></header>
-  <section class="hero-band"><h1 class="headline">پیگیری پریود و چرخه، برای <span class="serif">هر دوتامون</span></h1>
-    <p class="lead">بدنت رو بهتر از همیشه بشناس و پارتنرت رو هم همراه کن. پیش‌بینی، ثبت سریع علائم و حریم خصوصی کامل.</p>
-    <button class="pill-btn red" data-act="to-auth" data-mode="signup">همین حالا شروع کن</button><div class="hero-meta">رایگان، بدون تبلیغ، فقط برای شما</div></section>
-  <section class="band"><h2><b>با هر چرخه</b> خودت رو بهتر بشناس</h2><p>از پیگیری پریود تا اقدام به بارداری، بارداری، پیش‌یائسگی یا پیگیری بدون پریود.</p>
-    <div class="feature-cards">${feat.map(f => `<div class="feature-card">${glyph(f[0], f[1])}<span>${f[2]}</span></div>`).join('')}</div>
-    <div class="center" style="margin-top:30px"><button class="pill-btn red" data-act="to-auth" data-mode="signup">با Moon&Us شروع کن</button></div></section>
-  <section class="band crimson"><h2>اطلاعاتت <span class="serif">پیش ما امنه</span></h2>
-    <p>داده‌های سلامتت فروخته نمی‌شه. اگه پارتنرت رو دعوت کنی، فقط روزهای پریود، باروری، تخمک‌گذاری و PMS رو می‌بینه؛ نه علائم، احساسات یا یادداشت‌هات.</p>
-    <div class="privacy-seal">${privacySeal()}</div><button class="pill-btn blush" data-act="to-auth" data-mode="signup">ساخت حساب</button></section>
-  <footer class="site-foot">${logo('sm')}<p style="margin-top:12px">Moon&Us ابزار آگاهی از بدنه و جایگزین مشاوره‌ی پزشکی یا روش پیشگیری از بارداری نیست.</p></footer>`;
+  return `<div class="intro">
+    <div class="intro-track" id="intro-track">${slides.map((s, i) => `<section class="intro-slide" style="--bg:${s.bg};--acc:${s.accent}" data-i="${i}">
+      <div class="intro-dots">${slides.map((_, j) => `<i class="${i === j ? 'on' : ''}"></i>`).join('')}</div>
+      <h1>${s.t1}<span>${s.t2}</span></h1><div class="intro-vis">${s.vis}</div></section>`).join('')}</div>
+    <div class="intro-foot"><button class="intro-link" data-act="to-auth" data-mode="login">حساب دارم</button><button class="intro-cta" data-act="to-auth" data-mode="signup">ساخت حساب</button></div>
+  </div>`;
 }
-function privacySeal() {
-  let dots = ''; for (let i = 0; i < 12; i++) { const a = (i * 30 - 90) * Math.PI / 180; dots += `<circle cx="${(60 + 46 * Math.cos(a)).toFixed(1)}" cy="${(60 + 46 * Math.sin(a)).toFixed(1)}" r="4.2" fill="#FF4D41"/>`; }
-  return `<svg viewBox="0 0 120 120" width="150" height="150">${dots}<g transform="translate(40 36)"><rect x="3" y="18" width="34" height="27" rx="6" fill="#FF4D41"/><path d="M10 18v-5a10 10 0 0 1 20 0v5" fill="none" stroke="#FF4D41" stroke-width="5"/><circle cx="20" cy="30" r="3.6" fill="#FFE4E0"/><rect x="18.4" y="31" width="3.2" height="7" rx="1.4" fill="#FFE4E0"/></g></svg>`;
-}
+
 function authView() {
   const partner = authCtx === 'partner'; const inv = pendingInvite && pendingInvite.data;
   const titles = { signup: partner ? 'حسابت رو بساز' : 'یه حساب بساز', login: 'خوش برگشتی', reset: 'بازیابی رمز' };
@@ -401,11 +436,11 @@ async function handleAuth(user) {
   if (pendingInvite && (!u || u.role === 'partner')) { ME.role = 'partner'; ME.name = (u && u.name) || ''; screen = 'invite'; render(); return; }
   if (!u || !u.spaceId) {
     if (u && u.role === 'partner') { ME.role = 'partner'; ME.name = u.name || ''; screen = 'disconnected'; render(); return; }
-    ME.role = 'her'; screen = 'onboard'; render(); return;
+    ME.role = 'her'; if (screen !== 'onboard') onb = freshOnb(); screen = 'onboard'; render(); return;
   }
   ME.role = u.role; ME.spaceId = u.spaceId; ME.name = u.name || '';
   loadCache(); screen = 'app'; route = routeFromHash() || 'cycle';
-  startWatch(); render(); scheduleReminders();
+  startWatch(); render(); scheduleReminders(); setTimeout(maybeInstallPrompt, 2500);
 }
 async function acceptInvite(name) {
   const inv = pendingInvite.data;
@@ -413,7 +448,7 @@ async function acceptInvite(name) {
   ME.spaceId = inv.spaceId; ME.role = 'partner'; ME.name = name || ME.name; holdAuth = false;
   const herName = inv.herName; clearInvite();
   screen = 'app'; route = 'cycle'; history.replaceState(null, '', '#cycle');
-  S = emptyState(); startWatch(); render(); toast(`به ${herName} وصل شدی`);
+  S = emptyState(); startWatch(); render(); toast(`به ${herName} وصل شدی`); setTimeout(maybeInstallPrompt, 2000);
 }
 function clearInvite() { pendingInvite = null; if (location.hash.startsWith('#invite/')) history.replaceState(null, '', '#'); }
 async function signOut() {
@@ -444,11 +479,45 @@ function disconnectedView() {
     <div class="stack" style="margin-top:26px;max-width:320px;margin-inline:auto"><button class="pill-btn ghost block" data-act="sign-out">خروج از حساب</button><button class="text-link" style="justify-content:center;color:var(--muted)" data-act="delete-account">حذف حساب</button></div></section>`;
 }
 
+// ---- onboarding (after the account is created) ----
+const GOALS = [
+  ['next', 'drop', '#E13336', 'بدونم پریود بعدی کی میاد'],
+  ['body', 'sparkle', '#16A3BF', 'بدنم رو بهتر بشناسم'],
+  ['symptoms', 'chart', '#0E8A70', 'علائم رو ثبت کنم و الگوها رو ببینم'],
+  ['doctor', 'bulb', '#9A4DB5', 'علائمم رو برای پزشک ثبت کنم'],
+  ['conceive', 'egg', '#3B6FD8', 'باردار بشم'],
+  ['pregnant', 'heart', '#7B5CD6', 'باردارم'],
+  ['meno', 'flame', '#D9541E', 'تغییرات پیش‌یائسگی رو دنبال کنم'],
+  ['noperiod', 'moon', '#B8467A', 'پریود نمی‌شم ولی می‌خوام علائمم رو ثبت کنم'],
+];
+const modeFromGoals = g => g.includes('pregnant') ? 'pregnancy' : g.includes('conceive') ? 'conceive' : g.includes('meno') ? 'perimenopause' : g.includes('noperiod') ? 'noperiod' : 'period';
+const ENCOURAGE = {
+  period: ['#7A1F3D', 'بدنت داستان خودش رو داره', ['هر روزی که ثبت می‌کنی، Moon&Us الگوی چرخه‌ی خودت رو بهتر یاد می‌گیره؛ نه یه عدد کلی برای همه.', 'کم‌کم می‌فهمی کی انرژیت بیشتره، کی دلت آرامش می‌خواد و پریودت کی میاد.']],
+  conceive: ['#123F7A', 'قدم‌به‌قدم کنارتیم', ['اقدام به بارداری می‌تونه پر از امید و گاهی خستگی باشه.', 'روزهای پربارورتر رو از روی تاریخ پریودهات تخمین می‌زنیم. تست تخمک‌گذاری و دمای پایه اختیاری‌ان و اگه ثبتشون کنی، تخمین دقیق‌تر می‌شه.']],
+  pregnancy: ['#5B2A86', 'به این سفر خوش اومدی', ['هفته‌به‌هفته کنارتیم: هفته و سه‌ماهه‌ات، حرکات جنین و تجربه‌هایی که می‌خوای ثبت کنی.', 'برای هر نگرانی، تیم درمانت بهترین همراهه.']],
+  perimenopause: ['#7A2342', 'کنارت هستیم', ['پیش‌یائسگی می‌تونه دوره‌ای پر از احساسات متفاوت باشه. اگه تغییرات جسمی و ذهنی رو حس می‌کنی، بدون که تنها نیستی.', 'ثبت تجربه‌هات کمک می‌کنه ببینی چرخه‌ات در طول زمان چطور تغییر می‌کنه و با اطلاعات بیشتری با پزشکت صحبت کنی.']],
+  noperiod: ['#3E2A6E', 'پریود نداری؟ مشکلی نیست', ['می‌تونی بدون ثبت خونریزی، احساسات و علائمت رو دنبال کنی و بازه‌ها رو خودت تعیین کنی؛ مثلاً اول هر ماه یا از روزی که دارو عوض شد.']],
+};
+function heartsArt() {
+  const cols = ['#FF8A8A', '#F7B2C4', '#FFE0D2', '#FF6B4A', '#F5A6E8', '#FFC9A8', '#FF4D41', '#FFF1EA'];
+  let s = ''; let seed = 7; const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  for (let i = 0; i < 22; i++) { const x = 60 + rnd() * 200, y = 30 + rnd() * 130, k = .6 + rnd() * .7, r = -30 + rnd() * 60; s += `<path transform="translate(${x.toFixed(0)} ${y.toFixed(0)}) rotate(${r.toFixed(0)}) scale(${k.toFixed(2)})" d="M0 12C-14 2-20-6-12-13c5-4 10-2 12 3 2-5 7-7 12-3 8 7 2 15-12 25z" fill="${cols[i % cols.length]}"/>`; }
+  return `<svg viewBox="0 0 320 190" class="onb-art" aria-hidden="true">${s}</svg>`;
+}
+function moonsArt() {
+  const cols = [['#B3A6FF', '#FFE2CF'], ['#D8F2EC', '#2F6FB3'], ['#FF8E86', '#B7222A'], ['#3FC1A8', '#1E3F8A'], ['#FFE8E8', '#E58AA6'], ['#D9DEFF', '#3FC1A8'], ['#FF8A3D', '#3B6FD8'], ['#FFF0EE', '#1B8AA0']];
+  return `<div class="onb-moons">${cols.map(c => `<svg viewBox="0 0 80 80" aria-hidden="true"><circle cx="40" cy="40" r="38" fill="${c[0]}"/><path d="M44 18A22 22 0 1 0 60 54 18 18 0 1 1 44 18z" fill="${c[1]}"/></svg>`).join('')}</div>`;
+}
+const TERMS_HTML = `<p>Moon&Us ابزاریه برای ثبت و آگاهی از چرخه‌ی قاعدگی. پیش‌بینی‌ها تخمینی‌اند و تشخیص پزشکی، درمان یا روش پیشگیری از بارداری نیستن.</p><p>تو مسئول اطلاعاتی هستی که ثبت می‌کنی و هر وقت بخوای می‌تونی حسابت و همه‌ی داده‌هات رو پاک کنی.</p><p>اگه کسی رو دعوت کنی، فقط چیزهایی رو می‌بینه که در صفحه‌ی «ما دوتا» نوشته شده و هر وقت بخوای دسترسی‌اش رو قطع می‌کنی.</p>`;
+const PRIVACY_HTML = `<p><b>چی ذخیره می‌شه:</b> ایمیل، اسمت، تاریخ‌ها و چیزهایی که ثبت می‌کنی.</p><p><b>کجا:</b> در پایگاه داده‌ی Google Firebase (مرکز داده‌ی فرانکفورت) و روی دستگاه خودت.</p><p><b>کی می‌بینه:</b> فقط خودت. اگه کسی رو دعوت کنی، فقط روزهای پریود، باروری، تخمک‌گذاری و PMS و چیزهایی که خودت براش می‌فرستی رو می‌بینه؛ علائم، احساسات و یادداشت‌هات رو نه.</p><p><b>چی نمی‌کنیم:</b> فروش داده، تبلیغات، یا فرستادن داده‌ی سلامت به ابزارهای آماری یا هوش مصنوعی.</p><p><b>حذف:</b> از منو، «حذف حساب و همه‌ی اطلاعات».</p>`;
+
 function onbSteps() {
+  if (onb.account === 'code') return ['account', 'code'];
   const m = onb.mode;
-  if (m === 'pregnancy') return ['name', 'mode', 'preg'];
-  if (m === 'noperiod') return ['name', 'mode', 'interval'];
-  return ['name', 'mode', 'last', 'cycle', 'period'];
+  const base = ['account', 'consent', 'goals', 'encourage', 'name', 'age'];
+  if (m === 'pregnancy') return [...base, 'preg', 'notify'];
+  if (m === 'noperiod') return [...base, 'contra', 'interval', 'notify'];
+  return [...base, 'contra', 'last', 'cycle', 'period', 'notify'];
 }
 function datePickerCard(selKey, act, maxDate = todayDate()) {
   return `<div class="card white">${monthGrid(calAnchor, d => {
@@ -458,49 +527,107 @@ function datePickerCard(selKey, act, maxDate = todayDate()) {
 }
 function onboardView() {
   const steps = onbSteps(); const s = Math.min(onb.step, steps.length - 1); const step = steps[s]; const t = todayDate();
-  let body = '', canNext = true;
-  if (step === 'name') body = `<h1 class="qtitle">سلام! اسمت چیه؟</h1><p class="qsub">برای اینکه Moon&Us باهات صمیمی‌تر حرف بزنه.</p><input class="input big" id="o-name" maxlength="24" autocomplete="given-name" placeholder="مثلاً بهاره" value="${esc(onb.name)}">`;
-  else if (step === 'mode') body = `<h1 class="qtitle">از Moon&Us <span class="serif">برای چی</span> استفاده می‌کنی؟</h1><p class="qsub">هر وقت بخوای عوضش می‌کنی و تاریخچه‌ات حفظ می‌شه.</p>
-    <div class="stack">${Object.entries(MODES).map(([k, m]) => `<button class="choice ${onb.mode === k ? 'on' : ''}" data-act="onb-mode" data-v="${k}">${glyph(m.glyph, m.color)}<div><b>${m.name}</b><small>${m.desc}</small></div><span class="radio"></span></button>`).join('')}</div>`;
-  else if (step === 'last') {
+  let body = '', canNext = true, top = '', foot = null, cls = '';
+  if (step === 'account') {
+    cls = 'band-top'; top = `<div class="onb-band" style="--band:#0A4A40">${moonsArt()}</div>`;
+    body = `<h1 class="qtitle center">می‌خوای با این حساب <span class="serif">چرخه‌ی خودت</span> رو دنبال کنی؟</h1>
+      <div class="stack" style="margin-top:8px"><button class="choice row-choice" data-act="onb-account" data-v="self">${glyph('cycle', '#0C7A92')}<div><b>آره</b></div><span class="chev">${ic('chevL')}</span></button>
+      <button class="choice row-choice" data-act="onb-account" data-v="code">${glyph('heart', '#C2185B')}<div><b>نه، یه کد دارم تا چرخه‌ی کسی رو که دوستش دارم ببینم</b></div><span class="chev">${ic('chevL')}</span></button></div>`;
+    foot = '';
+  } else if (step === 'code') {
+    canNext = !busy;
+    body = `<h1 class="qtitle">کد دعوت رو <span class="serif">وارد کن</span></h1><p class="qsub">کدی که برات فرستاده رو بنویس. بعد از اتصال، فقط چیزهایی رو می‌بینی که خودش به اشتراک می‌ذاره.</p>
+      <div class="field"><label for="o-code">کد دعوت</label><input class="input big ltr" id="o-code" autocomplete="off" autocapitalize="none" placeholder="abcd-efgh-jkmn" value="${esc(onb.code || '')}"></div>
+      <div class="field"><label for="o-pname">اسم خودت</label><input class="input" id="o-pname" maxlength="24" placeholder="مثلاً میلاد" value="${esc(onb.pname || '')}"></div>
+      ${onb.codeError ? `<div class="form-error">${esc(onb.codeError)}</div>` : ''}`;
+    foot = `<button class="pill-btn red block" data-act="onb-join" ${busy ? 'disabled' : ''}>${busy ? 'در حال اتصال…' : 'وصل شو'}</button>`;
+  } else if (step === 'consent') {
+    const c = onb.consent; canNext = c.terms && c.privacy && c.health;
+    body = `<div class="center"><span class="consent-logo">${logo('mark')}</span></div><h1 class="qtitle center">تو و <span class="serif">Moon&Us</span></h1>
+      <p class="qsub center">قول می‌دیم اطلاعاتت رو امن و محرمانه نگه داریم. یه لحظه وقت بذار و ببین باهاشون چی کار می‌کنیم.</p><div class="divider"></div>
+      ${[['terms', `<button class="text-link inline" data-act="legal" data-v="terms">شرایط استفاده</button>ی Moon&Us رو می‌پذیرم.`], ['privacy', `<button class="text-link inline" data-act="legal" data-v="privacy">حریم خصوصی</button> Moon&Us رو خوندم.`], ['health', 'موافقم Moon&Us اطلاعات سلامتی که ثبت می‌کنم رو پردازش کنه تا بتونه پیش‌بینی‌ها و تحلیل‌ها رو بسازه.']]
+        .map(([k, txt]) => `<div class="consent-row"><button class="cbox ${c[k] ? 'on' : ''}" data-act="onb-consent" data-v="${k}" aria-label="تأیید">${c[k] ? ic('check') : ''}</button><p>${txt}</p></div>`).join('')}`;
+  } else if (step === 'goals') {
+    canNext = onb.goals.length > 0;
+    body = `<h1 class="qtitle center">از Moon&Us <span class="serif">برای چی</span> می‌خوای استفاده کنی؟</h1><p class="qsub center">می‌تونی چند تا انتخاب کنی.</p>
+      <div class="goal-grid">${GOALS.map(([id, g, col, label]) => `<button class="goal ${onb.goals.includes(id) ? 'on' : ''}" data-act="onb-goal" data-v="${id}">${glyph(g, col)}<b>${label}</b></button>`).join('')}</div>`;
+  } else if (step === 'encourage') {
+    const [band, title, paras] = ENCOURAGE[onb.mode];
+    cls = 'band-top'; top = `<div class="onb-band tall" style="--band:${band}">${heartsArt()}</div>`;
+    body = `<h1 class="qtitle center">${title}</h1>${paras.map(x => `<p class="qsub" style="margin-top:0">${x}</p>`).join('')}`;
+  } else if (step === 'name') body = `<h1 class="qtitle">اسمت چیه؟</h1><p class="qsub">Moon&Us با همین اسم صدات می‌کنه.</p><input class="input big" id="o-name" maxlength="24" autocomplete="given-name" placeholder="مثلاً بهاره" value="${esc(onb.name)}">`;
+  else if (step === 'age') {
+    const y = new Date().getFullYear();
+    body = `<h1 class="qtitle">سال تولدت <span class="serif">چنده؟</span></h1><p class="qsub">برای راهنمایی‌هایی که به سن بستگی دارن، مثل اقدام به بارداری یا پیش‌یائسگی. فقط سالش کافیه.</p>
+      <div class="number-picker"><button data-act="num" data-id="birthYear" data-d="1" data-min="${y - 70}" data-max="${y - 9}" aria-label="بیشتر">+</button><div class="val" id="v-birthYear" data-v="${onb.birthYear}"><b>${fa(onb.birthYear)}</b><span>میلادی، حدود ${fa(y - onb.birthYear)} سال</span></div><button data-act="num" data-id="birthYear" data-d="-1" data-min="${y - 70}" data-max="${y - 9}" aria-label="کمتر">−</button></div>
+      <button class="text-link" style="justify-content:center" data-act="onb-skip">ترجیح می‌دم نگم</button>`;
+  } else if (step === 'contra') {
+    canNext = onb.hormonal !== null;
+    const opts = [['none', 'از روش هورمونی استفاده نمی‌کنم', 'یا از روش غیرهورمونی مثل کاندوم یا آی‌یودی مسی'], ['pill', 'قرص ضدبارداری', 'یادآور روزانه‌ی قرص رو هم روشن می‌کنیم'], ['other', 'روش هورمونی دیگه', 'آی‌یودی هورمونی، ایمپلنت، آمپول، حلقه یا چسب']];
+    body = `<h1 class="qtitle">از روش پیشگیری <span class="serif">هورمونی</span> استفاده می‌کنی؟</h1><p class="qsub">روش‌های هورمونی الگوی چرخه رو تغییر می‌دن؛ برای همین تخمین فازها رو براشون نشون نمی‌دیم.</p>
+      <div class="stack">${opts.map(([v, b, sm]) => `<button class="choice ${onb.hormonal === v ? 'on' : ''}" data-act="onb-contra" data-v="${v}"><div><b>${b}</b><small>${sm}</small></div><span class="radio"></span></button>`).join('')}</div>`;
+  } else if (step === 'last') {
     canNext = !!(onb.picked || onb.unknown);
     body = `<h1 class="qtitle">آخرین پریودت کی <span class="serif">شروع شد؟</span></h1><p class="qsub">روز اولش رو روی تقویم انتخاب کن.</p>${datePickerCard(onb.picked, 'onb-pick')}
       ${onb.picked ? `<p class="center" style="color:var(--ink-2)">${Cal.weekdayDayMonth(fromKey(onb.picked))}، ${relDays(dayDiff(t, fromKey(onb.picked)))}</p>` : ''}
       <button class="choice ${onb.unknown ? 'on' : ''}" data-act="onb-unknown"><div><b>یادم نیست</b><small>بعداً از تقویم ثبتش می‌کنم</small></div><span class="radio"></span></button>`;
-  } else if (step === 'cycle') body = `<h1 class="qtitle">چرخه‌ات معمولاً <span class="serif">چند روزه؟</span></h1><p class="qsub">اگه نمی‌دونی، ۲۸ رو نگه دار؛ Moon&Us از روی ثبت‌هات یاد می‌گیره.</p>${numberPicker('cycle', onb.cycle, 18, 60)}`;
+  } else if (step === 'cycle') body = `<h1 class="qtitle">چرخه‌ات معمولاً <span class="serif">چند روزه؟</span></h1><p class="qsub">از روز اول یه پریود تا روز اول پریود بعدی. اگه نمی‌دونی، ۲۸ رو نگه دار؛ از روی ثبت‌هات یاد می‌گیریم.</p>${numberPicker('cycle', onb.cycle, 18, 60)}`;
   else if (step === 'period') body = `<h1 class="qtitle">پریودت معمولاً <span class="serif">چند روز</span> طول می‌کشه؟</h1><p class="qsub">بیشتر آدم‌ها بین ۲ تا ۷ روز.</p>${numberPicker('period', onb.period, 1, 12)}`;
-  else if (step === 'preg') { canNext = !!onb.picked; body = `<h1 class="qtitle">اولین روز <span class="serif">آخرین پریودت</span> کی بود؟</h1><p class="qsub">هفته‌ی بارداری از این تاریخ حساب می‌شه. تاریخ زایمان رو بعداً می‌تونی دستی عوض کنی.</p>${datePickerCard(onb.picked, 'onb-pick')}`; }
-  else if (step === 'interval') { canNext = !!onb.picked; body = `<h1 class="qtitle">بازه‌ی اول از <span class="serif">کی شروع بشه؟</span></h1><p class="qsub">مثلاً اول همین ماه یا روزی که دارو عوض شد. شروع بازه پریود حساب نمی‌شه.</p>${datePickerCard(onb.picked, 'onb-pick')}`; }
+  else if (step === 'preg') { canNext = !!onb.picked; body = `<h1 class="qtitle">اولین روز <span class="serif">آخرین پریودت</span> کی بود؟</h1><p class="qsub">هفته‌ی بارداری از این تاریخ حساب می‌شه. تاریخ زایمانی که پزشکت گفته رو بعداً می‌تونی وارد کنی.</p>${datePickerCard(onb.picked, 'onb-pick')}`; }
+  else if (step === 'interval') { canNext = !!onb.picked; body = `<h1 class="qtitle">بازه‌ی اول از <span class="serif">کی شروع بشه؟</span></h1><p class="qsub">مثلاً اول همین ماه یا روزی که دارو عوض شد.</p>${datePickerCard(onb.picked, 'onb-pick')}`; }
+  else if (step === 'notify') {
+    body = `<div class="center">${glyph('bell', '#E8A013', 'ic big')}</div><h1 class="qtitle center">یادت بندازیم؟</h1><p class="qsub center">قبل از پریود، روز پیش‌بینی‌شده و اگه تأخیر داشت، یه یادآوری کوچیک می‌فرستیم. هر وقت بخوای از منو خاموش یا محرمانه‌اش می‌کنی.</p>`;
+    foot = `<button class="pill-btn red block" data-act="onb-notify-yes" ${busy ? 'disabled' : ''}>آره، یادم بنداز</button><button class="text-link" style="justify-content:center" data-act="onb-done">بعداً</button>`;
+  }
   const last = s === steps.length - 1;
-  return `<div class="qscreen"><div class="qtop">${s > 0 ? `<button class="round-btn" data-act="onb-back" aria-label="قبلی">${ic('chevR')}</button>` : `<span style="width:44px"></span>`}<div class="qprogress"><i style="width:${((s + 1) / steps.length * 100).toFixed(0)}%"></i></div></div>
-    <div class="qbody">${body}${last ? '<p class="fine">پیش‌بینی‌ها تخمینی‌اند و روش پیشگیری از بارداری نیستند.</p>' : ''}</div>
-    <div class="qfoot"><button class="pill-btn red block" data-act="${last ? 'onb-done' : 'onb-next'}" ${canNext && !busy ? '' : 'disabled'}>${busy ? 'کمی صبر کن…' : last ? 'تموم شد' : 'ادامه'}</button>
-    ${s === 0 && CLOUD ? `<button class="text-link" style="justify-content:center;color:var(--muted)" data-act="sign-out">خروج</button>` : ''}</div></div>`;
+  const defaultFoot = `<button class="pill-btn red block" data-act="${last ? 'onb-done' : 'onb-next'}" ${canNext && !busy ? '' : 'disabled'}>${busy ? 'کمی صبر کن…' : last ? 'تموم شد' : 'ادامه'}</button>`;
+  return `<div class="qscreen ${cls}">${top}
+    <div class="qtop">${s > 0 ? `<button class="round-btn" data-act="onb-back" aria-label="قبلی">${ic('chevR')}</button>` : (CLOUD ? `<button class="text-link" style="color:var(--muted)" data-act="sign-out">خروج</button>` : '<span></span>')}${!top ? `<div class="qprogress"><i style="width:${((s + 1) / steps.length * 100).toFixed(0)}%"></i></div>` : ''}</div>
+    <div class="qbody">${body}</div>
+    <div class="qfoot">${foot === null ? defaultFoot : foot}</div></div>`;
 }
 function numberPicker(id, val, min, max) {
   return `<div class="number-picker"><button data-act="num" data-id="${id}" data-d="1" data-min="${min}" data-max="${max}" aria-label="بیشتر">+</button><div class="val" id="v-${id}" data-v="${val}"><b>${fa(val)}</b><span>روز</span></div><button data-act="num" data-id="${id}" data-d="-1" data-min="${min}" data-max="${max}" aria-label="کمتر">−</button></div>`;
 }
+async function joinWithCode() {
+  const raw = ($('#o-code')?.value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  const name = ($('#o-pname')?.value || '').trim();
+  onb.code = raw; onb.pname = name; onb.codeError = '';
+  if (raw.length < 6) { onb.codeError = 'کد کامل نیست.'; return render(); }
+  if (!name) { onb.codeError = 'اسمت رو بنویس.'; return render(); }
+  busy = true; render();
+  try {
+    const inv = await Cloud.getInvite(raw);
+    if (!inv || inv.usedBy) { onb.codeError = 'این کد معتبر نیست یا قبلاً استفاده شده.'; busy = false; return render(); }
+    if (inv.ownerUid === ME.uid) { onb.codeError = 'این کد مال حساب خودته.'; busy = false; return render(); }
+    pendingInvite = { code: raw, data: inv }; holdAuth = true;
+    await acceptInvite(name);
+  } catch (e) { console.error('join code', e && e.code); holdAuth = false; onb.codeError = 'اتصال انجام نشد. دوباره امتحان کن.'; }
+  busy = false; render();
+}
 async function finishOnboarding() {
-  const name = onb.name.trim(); const t = todayDate();
-  const profile = { ...DEFAULT_PROFILE, cycleLength: onb.cycle, periodLength: onb.period };
+  const name = onb.name.trim(); const t = todayDate(); const m = onb.mode;
+  const profile = { ...DEFAULT_PROFILE, cycleLength: onb.cycle, periodLength: onb.period, birthYear: onb.birthYear || null, goals: onb.goals, hormonal: ['pill', 'other'].includes(onb.hormonal), pill: onb.hormonal === 'pill' };
   const logs = {}; let pregnancy = null; const intervals = [];
-  if (['period', 'conceive', 'perimenopause'].includes(onb.mode) && onb.picked) {
+  if (['period', 'conceive', 'perimenopause'].includes(m) && onb.picked) {
     const s = fromKey(onb.picked); for (let i = 0; i < onb.period; i++) { const d = addDays(s, i); if (d <= t) logs[toKey(d)] = { period: 'medium', u: Date.now() }; }
   }
-  if (onb.mode === 'pregnancy') pregnancy = { ref: onb.picked, due: toKey(addDays(fromKey(onb.picked), 280)), start: toKey(t), end: null };
-  if (onb.mode === 'noperiod') intervals.push(onb.picked);
-  const modeHistory = [{ mode: 'period', from: '1900-01-01' }]; if (onb.mode !== 'period') modeHistory.push({ mode: onb.mode, from: toKey(t) });
-  const settings = { profile, modeHistory, pregnancy, pregHistory: [], intervals, tags: [], reminders: JSON.parse(JSON.stringify(DEFAULT_REMINDERS)) };
+  if (m === 'pregnancy' && onb.picked) pregnancy = { ref: onb.picked, due: toKey(addDays(fromKey(onb.picked), 280)), start: toKey(t), end: null };
+  if (m === 'noperiod' && onb.picked) intervals.push(onb.picked);
+  const modeHistory = [{ mode: 'period', from: '1900-01-01' }]; if (m !== 'period') modeHistory.push({ mode: m, from: toKey(t) });
+  const reminders = JSON.parse(JSON.stringify(DEFAULT_REMINDERS)); if (profile.pill) reminders.pill.on = true;
+  const settings = { profile, modeHistory, pregnancy, pregHistory: [], intervals, tags: [], reminders };
   busy = true; render();
   try {
     if (CLOUD) {
       holdAuth = true;
       const sid = await Cloud.createSpace(ME.uid, name, settings, logs);
-      await Cloud.setUserDoc(ME.uid, { spaceId: sid, role: 'her', name });
+      await Cloud.setUserDoc(ME.uid, { spaceId: sid, role: 'her', name, consent: { v: 1, at: Date.now() } });
       ME.spaceId = sid; ME.role = 'her'; ME.name = name; holdAuth = false;
       S = { ...emptyState(), ...settings, herName: name, logs, onboarded: true }; startWatch();
     } else { S = { ...emptyState(), ...settings, herName: name, logs, onboarded: true }; ME = { uid: 'local', role: 'her', spaceId: 'local', name, email: '' }; }
     saveCache(); screen = 'app'; route = 'cycle'; history.replaceState(null, '', '#cycle'); scheduleReminders();
+    setTimeout(maybeInstallPrompt, 1500);
   } catch (e) { console.error('onboarding', e && e.code); holdAuth = false; toast(errMsg(e)); }
   busy = false; render();
 }
@@ -596,11 +723,12 @@ function confidenceNote(p) {
 }
 function viewHome(p) {
   const m = p.mode; const you = isHer();
-  if (!you && S.shared && S.shared.paused) return `<div class="card peach center" style="margin-top:20px">${face(3, 52)}<h3 style="margin-top:10px">اشتراک‌گذاری موقتاً متوقفه</h3><p style="color:var(--ink-2);margin-top:6px">${herN()} الان از حالتی استفاده می‌کنه که اطلاعات چرخه در اون به اشتراک گذاشته نمی‌شه.</p></div>${statusCard()}`;
-  if (!you && !S.shared) return `<div class="card center" style="margin-top:20px"><p style="color:var(--ink-2)">هنوز اطلاعاتی از ${herN()} نرسیده. وقتی اپ رو باز کنه، اینجا به‌روز می‌شه.</p></div>${statusCard()}`;
-  if (m === 'pregnancy') return pregnancyHome(p);
-  if (m === 'noperiod') return noPeriodHome(p);
-  return cycleHome(p);
+  if (!you && S.shared && S.shared.paused) return requestsBanner() + `<div class="card peach center" style="margin-top:20px">${face(3, 52)}<h3 style="margin-top:10px">اشتراک‌گذاری موقتاً متوقفه</h3><p style="color:var(--ink-2);margin-top:6px">${herN()} الان از حالتی استفاده می‌کنه که اطلاعات چرخه در اون به اشتراک گذاشته نمی‌شه.</p></div>${statusCard()}`;
+  if (!you && !S.shared) return requestsBanner() + `<div class="card center" style="margin-top:20px"><p style="color:var(--ink-2)">هنوز اطلاعاتی از ${herN()} نرسیده. وقتی اپ رو باز کنه، اینجا به‌روز می‌شه.</p></div>${statusCard()}`;
+  const banner = you ? '' : requestsBanner();
+  if (m === 'pregnancy') return banner + pregnancyHome(p);
+  if (m === 'noperiod') return banner + noPeriodHome(p);
+  return banner + cycleHome(p);
 }
 function modePill() { const m = mode(); return isHer() ? `<button class="mode-pill" data-act="mode-sheet">حالت: <b>${MODES[m].name}</b> ${ic('chevD')}</button>` : ''; }
 function cycleHome(p) {
@@ -648,7 +776,7 @@ function phaseInsightCard(p) {
     const why = S.profile.hormonal ? 'چون روش پیشگیری هورمونی در تنظیماتت فعاله' : p.predLen < 20 ? 'چون چرخه‌ی پیش‌بینی‌شده کوتاه‌تر از ۲۰ روزه' : p.mode === 'perimenopause' ? 'در حالت پیش‌یائسگی' : p.lateDays > 0 ? 'وقتی پریود از تخمین عقب‌تره' : '';
     return why ? `<p class="data-meta">تخمین زیرفازها ${why} نمایش داده نمی‌شه.</p>` : '';
   }
-  return `<div class="card sky"><div class="card-label">${sp.name} <span>تخمینی، نه اندازه‌گیری هورمون</span></div>
+  return `<div class="card sky"><div class="card-label">${sp.name} <span>تخمینی، نه اندازه‌گیری هورمون</span></div>${hormoneChart(p.subphase, true)}${hormoneLegend(p.subphase)}
     <p style="font-size:15px;color:var(--ink-2)"><b style="font-weight:500;color:var(--ink)">هورمون‌ها معمولاً: </b>${sp.hormones}</p>
     <p style="font-size:15px;color:var(--ink-2);margin-top:6px"><b style="font-weight:500;color:var(--ink)">ممکنه: </b>${sp.may}</p>
     ${isHer() ? `<p style="font-size:14px;color:var(--ink-2);margin-top:8px">پیشنهاد برای ثبت: ${sp.track.join('، ')}</p>` : ''}
@@ -868,9 +996,33 @@ function logSheetHtml(k) {
 }
 function openLog(k) { if (!isHer()) return; sheetDay = k; openSheet(logSheetHtml(k)); }
 
+
+// Typical hormone pattern (textbook shapes, not her measurements). x = 0..100 across the cycle, RTL.
+const HORMONES = [
+  ['E2', 'استروژن (E2)', '#4A78E0', x => 0.12 + 0.62 * Math.exp(-((x - 45) ** 2) / 90) + 0.3 * Math.exp(-((x - 72) ** 2) / 160)],
+  ['PG', 'پروژسترون (PG)', '#2EC4A0', x => 0.06 + 0.72 * Math.exp(-((x - 72) ** 2) / 210)],
+  ['FSH', 'هورمون محرک فولیکول (FSH)', '#F5D27A', x => 0.16 + 0.12 * Math.exp(-((x - 6) ** 2) / 60) + 0.14 * Math.exp(-((x - 50) ** 2) / 6) + 0.06 * Math.exp(-((x - 98) ** 2) / 30)],
+  ['LH', 'هورمون لوتئینی (LH)', '#E0607E', x => 0.1 + 0.85 * Math.exp(-((x - 49) ** 2) / 5)],
+];
+function hormoneChart(sub, compact = false) {
+  const W = 340, H = compact ? 120 : 160, top = 22, bottom = H - 22;
+  const X = x => (W - 8 - x / 100 * (W - 16)).toFixed(1); // RTL: day 1 on the right
+  const Y = v => (bottom - v * (bottom - top - 6)).toFixed(1);
+  const blocks = Object.entries(SUBPHASE_RANGE).map(([k, [a, b]]) => `<rect x="${X(b)}" y="${top}" width="${(+X(a) - +X(b) - 3).toFixed(1)}" height="${bottom - top}" rx="8" fill="${b <= 50 ? '#7A2342' : '#0A6A55'}" opacity="${k === sub ? 1 : 0.38}"/>`).join('');
+  const curves = HORMONES.map(([, , col, f]) => { let d = ''; for (let x = 0; x <= 100; x += 2) d += `${x ? 'L' : 'M'}${X(x)} ${Y(f(x))}`; return `<path d="${d}" fill="none" stroke="${col}" stroke-width="2.4" stroke-linecap="round"/>`; }).join('');
+  return `<svg class="hormones" viewBox="0 0 ${W} ${H}" role="img" aria-label="الگوی معمول هورمون‌ها در چرخه">${blocks}
+    <line x1="${X(50)}" x2="${X(50)}" y1="${top - 6}" y2="${bottom}" stroke="#7FB3FF" stroke-width="2"/><circle cx="${X(50)}" cy="${top - 8}" r="4" fill="#7FB3FF"/>
+    <text x="${X(50)}" y="11" text-anchor="middle" font-size="10" fill="#7FB3FF" font-family="Vazirmatn">تخمک‌گذاری</text>${curves}
+    <text x="${X(25)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="#E58AA6" font-family="Vazirmatn">فاز فولیکولار</text><text x="${X(75)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="#3FD0A8" font-family="Vazirmatn">فاز لوتئال</text></svg>`;
+}
+function hormoneLegend(sub) {
+  const lv = sub && SUBPHASES[sub] && SUBPHASES[sub].levels;
+  return `<div class="h-legend">${HORMONES.map(([k, name, col]) => `<span><i style="background:${col}"></i>${name}${lv ? `: <b>${lv[k]}</b>` : ''}</span>`).join('')}</div>`;
+}
 function phaseSheet() {
   const p = predict(engineState()); const ph = PHASES[p.phase || 'unknown'] || PHASES.unknown; const you = isHer(); const sp = p.subphase && SUBPHASES[p.subphase];
   openSheet(`${sheetHead(sp ? sp.name : ph.name, 'تخمینی')}<div class="sheet-body">
+    ${sp ? `<div class="card white">${hormoneChart(p.subphase)}${hormoneLegend(p.subphase)}<p class="data-meta">الگوی معمول از منابع آموزشی؛ هورمون‌های خودت اندازه‌گیری نشده.</p></div>` : ''}
     <div class="card ${ph.card}"><p style="font-size:16px;line-height:1.95">${ph.body}</p>${sp ? `<p style="margin-top:8px;color:var(--ink-2)">${sp.hormones} ${sp.may}</p>` : ''}<div style="margin-top:8px">${draftBadge()}</div></div>
     <div class="card white"><div class="card-label">${you ? 'مراقبت از خودت' : 'چطور کنارش باشی'}</div><ul class="bullets">${(you ? ph.her : ph.him).map(x => `<li>${x}</li>`).join('')}</ul></div>
     ${!you && ph.avoid.length ? `<div class="card white"><div class="card-label">بهتره نه</div><ul class="bullets x">${ph.avoid.map(x => `<li>${x}</li>`).join('')}</ul></div>` : ''}
@@ -983,40 +1135,179 @@ function composeSheet() {
 }
 
 // =================================================================
-// Us (sharing)
+// Us — two different worlds: hers (receives, asks) and his (responds, gives)
 // =================================================================
 const inviteUrl = code => `${location.origin}${location.pathname.replace(/index\.html$/, '')}#invite/${code}`;
+const fmtCode = c => (c || '').replace(/(.{4})(?=.)/g, '$1-');
+const REQUESTS = [
+  ['hug', 'بغل', 'heart', '#E0457B'], ['chocolate', 'شکلات', 'cookie', '#8A4B2A'], ['hotwater', 'کیسه آب‌گرم', 'flame', '#F26B1D'],
+  ['massage', 'ماساژ', 'sparkle', '#9A6CC6'], ['tea', 'دمنوش گرم', 'leaf', '#3A9B5C'], ['food', 'یه غذای خوشمزه', 'cookie', '#E8A013'],
+  ['movie', 'فیلم با هم', 'moon', '#3B6FD8'], ['comehere', 'بیا پیشم', 'people', '#C2185B'], ['painkiller', 'مسکن', 'pill', '#3B6FD8'],
+  ['pads', 'نوار بهداشتی', 'drop', '#E13336'], ['space', 'کمی تنهایی', 'moon', '#5A6B7B'], ['quiet', 'سکوت و آرامش', 'bulb', '#16A3BF'],
+];
+const REQ_BY_ID = Object.fromEntries([...REQUESTS, ['need_you', 'الان بهت نیاز دارم', 'heart', '#BD131F']].map(r => [r[0], r]));
+const REQ_STATUS = { open: 'فرستاده شد', seen: 'دید', onit: 'داره انجامش می‌ده', done: 'انجام شد' };
+const COUPONS = ['ماساژ ۲۰ دقیقه‌ای', 'یه شام به انتخاب تو', 'یه روز بدون کار خونه', 'صبحونه توی تخت', 'یه فیلم به انتخاب تو، بدون غر زدن', 'بستنی، هر وقت خواستی'];
+const COMPLIMENTS = ['امروز هم مثل همیشه قشنگی.', 'به داشتنت افتخار می‌کنم.', 'هر روز بیشتر از دیروز دوستت دارم.', 'تو قوی‌ترین آدمی هستی که می‌شناسم.', 'لبخندت بهترین قسمت روزمه.', 'هر چی لازم داشته باشی، کنارتم.'];
+const GIFT_KINDS = { note: ['یادداشت عاشقانه', 'heart', '#E0457B'], photo: ['عکس', 'sun', '#E8730C'], coupon: ['کوپن', 'tag', '#0E8A70'], song: ['آهنگ یا لینک', 'sparkle', '#3B6FD8'], compliment: ['یه جمله‌ی قشنگ', 'bulb', '#9A6CC6'] };
+const pname = () => esc((Object.values(S.partners || {})[0] || {}).name || 'پارتنرت');
+const ago = at => { const m = Math.round((Date.now() - at) / 60000); return m < 1 ? 'همین الان' : m < 60 ? `${fa(m)} دقیقه پیش` : m < 1440 ? `${fa(Math.round(m / 60))} ساعت پیش` : Cal.short(new Date(at)); };
+const giftOpenable = g => !g.unlockAt || g.unlockAt <= toKey(todayDate());
+const activeRequests = () => (S.requests || []).filter(r => r.status !== 'done' && Date.now() - r.at < 36 * 3600 * 1000).sort((a, b) => b.at - a.at);
+
 function viewUs(p) {
-  const you = isHer();
-  if (you && !CLOUD) return `<div class="center"><div class="duo"><span class="avatar her">${initial(S.herName)}</span><span class="avatar empty">+</span></div><h1 class="page-title">پارتنرت رو <span class="serif">اضافه کن</span></h1></div><div class="card"><p style="color:var(--ink-2)">اتصال پارتنر فقط در نسخه‌ی آنلاین با حساب کاربری کار می‌کنه.</p></div>`;
-  const partners = Object.entries(S.partners || {});
-  if (you) {
-    let html = `<div class="center" style="padding-top:8px"><div class="duo"><span class="avatar her">${initial(S.herName)}</span>${partners.length ? partners.map(([, x]) => `<span class="avatar him">${initial(x.name)}</span>`).join('') : '<span class="avatar empty">+</span>'}</div>
-      <h1 class="page-title">${partners.length ? `تو و ${partnerN()} <span class="serif">به هم وصلید</span>` : `چرخه‌ات رو با <span class="serif">پارتنرت</span> به اشتراک بذار`}</h1></div>`;
-    if (mode() === 'pregnancy') html += `<div class="card peach"><p style="font-size:14.5px">در حالت بارداری، اشتراک اطلاعات چرخه متوقفه. یادداشت‌ها و حال امروزت هنوز به اشتراک گذاشته می‌شن.</p></div>`;
-    if (partners.length) html += `<div class="card white"><div class="card-label">افراد متصل</div>${partners.map(([uid, x]) => `<div class="list-row"><span class="avatar him" style="width:40px;height:40px;font-size:16px;border:0">${initial(x.name)}</span><div class="main"><b>${esc(x.name || 'بدون نام')}</b><small>از ${Cal.full(new Date(x.joinedAt))}، فقط مشاهده</small></div><button class="pill-btn ghost sm" data-act="remove-partner" data-v="${uid}">قطع دسترسی</button></div>`).join('')}</div>`;
-    else html += `<div class="card"><div class="card-label">چیزی که می‌بینه</div>${[['drop', '#E13336', 'روزهای پریود و پیش‌بینی پریود بعدی'], ['egg', '#0C7A92', 'روزهای باروری، تخمک‌گذاری و PMS'], ['heart', '#E0457B', 'حال امروزت، فقط وقتی خودت ثبت کنی']].map(i => `<div class="list-row">${glyph(i[0], i[1])}<div class="main"><b>${i[2]}</b></div></div>`).join('')}
-      <div class="card-label" style="margin-top:12px">چیزی که نمی‌بینه</div><p style="font-size:14.5px;color:var(--ink-2)">علائم، احساسات، درد، انرژی، یادداشت‌های روزانه، برچسب‌ها، دما، وزن و تست‌ها. این‌ها اصلاً به حساب اون فرستاده نمی‌شن.</p></div>`;
-    html += S.inviteCode ? invitePending() : `<button class="pill-btn red block" data-act="invite" ${busy ? 'disabled' : ''}>${busy ? 'کمی صبر کن…' : partners.length ? 'دعوت یه نفر دیگه' : 'افزودن پارتنر'}</button><p class="fine">لینک دعوت فقط یک بار کار می‌کنه. هر وقت بخوای، دسترسی هر نفر رو جدا قطع می‌کنی.</p>`;
-    if (partners.length) html += statusEditor() + notesCard() + kitCard(p);
-    return html;
+  if (isHer()) {
+    if (!CLOUD && !Object.keys(S.partners || {}).length) return `<div class="center"><div class="duo"><span class="avatar her">${initial(S.herName)}</span><span class="avatar empty">+</span></div><h1 class="page-title">کسی که دوستش داری رو <span class="serif">اضافه کن</span></h1></div><div class="card"><p style="color:var(--ink-2)">اتصال فقط در نسخه‌ی آنلاین با حساب کاربری کار می‌کنه.</p></div>`;
+    return Object.keys(S.partners || {}).length ? herUs(p) : herInvite();
   }
-  return `<div class="center"><div class="duo"><span class="avatar her">${initial(S.herName)}</span><span class="avatar him">${initial(ME.name)}</span></div><h1 class="page-title" style="font-size:26px">تو به ${herN()} <span class="serif">وصلی</span></h1><p class="data-meta">فقط مشاهده. ${S.shared && S.shared.updatedAt ? `آخرین به‌روزرسانی: ${Cal.dayMonth(new Date(S.shared.updatedAt))}` : ''}</p></div>
-    ${statusCard()}${notesCard()}${kitCard(p)}<div class="center"><button class="text-link" style="color:var(--muted)" data-act="leave">قطع اتصال</button></div>`;
+  return hisUs(p);
+}
+
+// ---------- hers ----------
+function herInvite() {
+  return `<div class="center" style="padding-top:8px"><div class="duo"><span class="avatar her">${initial(S.herName)}</span><span class="avatar empty">+</span></div>
+    <h1 class="page-title">کسی که دوستش داری رو <span class="serif">کنارت بیار</span></h1>
+    <p class="page-lead" style="margin-top:8px">با یه کلیک بهش می‌گی چه حسی داری یا چی لازم داری، و اون هم می‌تونه برات یادداشت، عکس و سورپرایز بذاره.</p></div>
+    <div class="card"><div class="card-label">چیزی که می‌بینه</div>${[['drop', '#E13336', 'روزهای پریود و پیش‌بینی پریود بعدی'], ['egg', '#0C7A92', 'روزهای باروری، تخمک‌گذاری و PMS'], ['heart', '#E0457B', 'حال و درخواست‌هایی که خودت براش می‌فرستی']].map(i => `<div class="list-row">${glyph(i[0], i[1])}<div class="main"><b>${i[2]}</b></div></div>`).join('')}
+      <div class="card-label" style="margin-top:12px">چیزی که نمی‌بینه</div><p style="font-size:14.5px;color:var(--ink-2)">علائم، احساسات ثبت‌شده، درد، یادداشت‌های روزانه، برچسب‌ها، دما، وزن و تست‌ها. این‌ها اصلاً به حساب اون فرستاده نمی‌شن.</p></div>
+    ${S.inviteCode ? invitePending() : `<button class="pill-btn red block" data-act="invite" ${busy ? 'disabled' : ''}>${busy ? 'کمی صبر کن…' : 'دعوتش کن'}</button><p class="fine">لینک یا کد دعوت فقط یک بار کار می‌کنه و هر وقت بخوای دسترسی رو قطع می‌کنی.</p>`}`;
 }
 function invitePending() {
   const url = inviteUrl(S.inviteCode);
-  return `<div class="card white stack"><div class="card-label">دعوت آماده‌ست</div><p style="font-size:14.5px;color:var(--ink-2)">این لینک رو برای پارتنرت بفرست. وقتی قبول کنه، اینجا اضافه می‌شه.</p>
+  return `<div class="card white stack"><div class="card-label">دعوت آماده‌ست</div><p style="font-size:14.5px;color:var(--ink-2)">لینک رو براش بفرست، یا کد رو بهش بگو تا موقع ثبت‌نام وارد کنه.</p>
+    <div class="code-box latin">${esc(fmtCode(S.inviteCode))}</div>
     <div class="linkbox"><code>${esc(url)}</code><button class="round-btn flat" data-act="invite-copy" aria-label="کپی">${ic('copy')}</button></div>
     <button class="pill-btn red block" data-act="invite-share">${ic('share')} فرستادن لینک</button><button class="text-link" style="justify-content:center;color:var(--muted)" data-act="invite-cancel">لغو دعوت</button></div>`;
 }
-function statusEditor() {
-  const st = todayStatus() || { mood: null, needs: [], text: '' };
-  return `<div class="card peach"><div class="card-label">امروز حالم… <span>به اشتراک گذاشته می‌شه</span></div><div class="moods">${MOODS.map((m, i) => `<button class="mood ${st.mood === i ? 'on' : ''}" data-act="mood" data-i="${i}">${face(i)}<span>${m}</span></button>`).join('')}</div>
-    <div class="card-label" style="margin-top:18px">امروز لازم دارم…</div><div class="chips">${NEEDS.map(n => `<button class="chip ${(st.needs || []).includes(n[0]) ? 'on' : ''}" style="--c:var(--orange)" data-act="need" data-v="${n[0]}">${n[1]}</button>`).join('')}</div>
-    <div class="field" style="margin-top:16px"><label for="status-text">یه جمله برای ${partnerN()}</label><input class="input" id="status-text" maxlength="140" placeholder="مثلاً امروز فقط بغل می‌خوام" value="${esc(st.text || '')}" data-input="status-text"></div>
-    ${todayStatus() ? `<button class="text-link" style="margin-top:8px;color:var(--muted)" data-act="status-clear">پاک کردن حال امروز</button>` : ''}</div>`;
+function herUs(p) {
+  const him = pname();
+  const gifts = (S.gifts || []).slice().sort((a, b) => b.at - a.at);
+  const fresh = gifts.filter(g => giftOpenable(g) && !g.openedAt);
+  const locked = gifts.filter(g => !giftOpenable(g));
+  const opened = gifts.filter(g => giftOpenable(g) && g.openedAt);
+  const st = todayStatus() || { mood: null };
+  const act = activeRequests();
+  const kitDone = CARE_KIT.filter(c => (S.kit.items || {})[c[0]]).length;
+  let html = `<div class="us-head"><div class="duo small"><span class="avatar her">${initial(S.herName)}</span>${Object.values(S.partners).map(x => `<span class="avatar him">${initial(x.name)}</span>`).join('')}</div>
+    <div><h1 class="page-title" style="font-size:24px;padding:0">${him} <span class="serif">کنارته</span></h1><p class="muted" style="font-size:13px">هر چی اینجا بفرستی، همون لحظه می‌بینه.</p></div>
+    <button class="round-btn" data-act="sharing-sheet" aria-label="تنظیمات اشتراک">${ic('us')}</button></div>`;
+  if (fresh.length) {
+    html += `<button class="gift-hero" data-act="gift-open" data-id="${fresh[0].id}">${giftBoxArt()}<div><b>${him} یه چیزی برات گذاشته</b><small>${fresh.length > 1 ? `${fa(fresh.length)} هدیه‌ی باز‌نشده` : 'برای باز کردنش بزن'}</small></div></button>`;
+  }
+  if (locked.length) {
+    const next = locked.sort((a, b) => (a.unlockAt < b.unlockAt ? -1 : 1))[0];
+    html += `<div class="card plum row">${glyph('lock', '#7B5CD6')}<div style="flex:1"><b style="font-weight:500">یه سورپرایز قفل‌شده داری</b><div class="muted" style="font-size:13.5px">${next.unlockLabel ? esc(next.unlockLabel) + '، ' : ''}${Cal.weekdayDayMonth(fromKey(next.unlockAt))} باز می‌شه</div></div></div>`;
+  }
+  html += `<div class="card peach"><div class="card-label">حالت رو با یه لمس بگو</div><div class="moods">${MOODS.map((m, i) => `<button class="mood ${st.mood === i ? 'on' : ''}" data-act="mood" data-i="${i}">${face(i)}<span>${m}</span></button>`).join('')}</div>
+    ${todayStatus() ? `<p class="data-meta">${him} می‌بینه: «${MOODS[st.mood] || ''}»${st.text ? `، «${esc(st.text)}»` : ''}</p>` : ''}
+    <div class="field" style="margin-top:10px"><input class="input" id="status-text" maxlength="140" placeholder="یه جمله براش بنویس (اختیاری)" value="${esc(st.text || '')}" data-input="status-text"></div></div>`;
+  html += `<button class="need-you" data-act="request" data-v="need_you">${glyph('heart', '#BD131F')}<span>الان بهت نیاز دارم</span></button>`;
+  html += `<div class="card white"><div class="card-label">با یه کلیک بهش بگو <span>همون لحظه خبردار می‌شه</span></div>
+    <div class="req-grid">${REQUESTS.map(([id, label, g, col]) => { const on = act.find(r => r.kind === id); return `<button class="req ${on ? 'on' : ''}" data-act="request" data-v="${id}">${glyph(g, col)}<span>${label}</span>${on ? `<small>${REQ_STATUS[on.status]}</small>` : ''}</button>`; }).join('')}</div>
+    ${act.length ? `<div class="card-label" style="margin-top:14px">درخواست‌های فعال</div>${act.map(r => `<div class="list-row">${glyph(REQ_BY_ID[r.kind][2], REQ_BY_ID[r.kind][3])}<div class="main"><b>${REQ_BY_ID[r.kind][1]}</b><small>${ago(r.at)}</small></div><span class="status-chip s-${r.status}">${REQ_STATUS[r.status]}${r.status !== 'open' && r.ackAt ? '' : ''}</span><button class="round-btn flat sm" data-act="request-cancel" data-id="${r.id}" aria-label="لغو">${ic('close')}</button></div>`).join('')}` : ''}</div>`;
+  html += `<div class="card white"><div class="card-label">از طرف ${him} <span>${fa(opened.length)} هدیه</span></div>
+    ${opened.length ? `<div class="gift-wall">${opened.map(giftCard).join('')}</div>` : `<p class="muted" style="font-size:14.5px">هنوز چیزی اینجا نیست. هر یادداشت، عکس یا کوپنی که ${him} بفرسته، اینجا نگه داشته می‌شه.</p>`}</div>`;
+  html += notesCard();
+  html += `<div class="card row"><span style="flex:1;font-size:14.5px;color:var(--ink-2)">کیت مراقبت: ${him} ${fa(kitDone)} از ${fa(CARE_KIT.length)} مورد رو آماده کرده.</span></div>`;
+  return html;
 }
+function giftBoxArt() {
+  return `<svg viewBox="0 0 80 80" class="gift-art" aria-hidden="true"><rect x="12" y="34" width="56" height="36" rx="5" fill="#FF4D41"/><rect x="8" y="24" width="64" height="14" rx="4" fill="#E13336"/><rect x="36" y="24" width="8" height="46" fill="#FFD3CC"/><path d="M40 24c-4-10-18-14-18-5 0 6 10 5 18 5zM40 24c4-10 18-14 18-5 0 6-10 5-18 5z" fill="#FFD3CC"/></svg>`;
+}
+function giftCard(g) {
+  const head = `<div class="gc-head">${glyph(GIFT_KINDS[g.type][1], GIFT_KINDS[g.type][2])}<small>${ago(g.at)}</small>${g.reaction ? '<span class="gc-love">دوستش داشتی</span>' : ''}</div>`;
+  let body = '';
+  if (g.type === 'photo') body = `<img class="gc-img" src="${esc(g.img)}" alt="عکس">${g.text ? `<p>${esc(g.text)}</p>` : ''}`;
+  else if (g.type === 'coupon') body = `<div class="coupon"><small>کوپن</small><b>${esc(g.title)}</b>${g.text ? `<p>${esc(g.text)}</p>` : ''}${g.redeemedAt ? `<span class="status-chip s-done">استفاده شد</span>` : (isHer() ? `<button class="pill-btn sm red" data-act="coupon-use" data-id="${g.id}">استفاده می‌کنم</button>` : '')}</div>`;
+  else if (g.type === 'song') body = `<a class="song" href="${esc(g.url)}" target="_blank" rel="noopener">${ic('send')}<span>${esc(g.title || 'یه آهنگ برات')}</span></a>${g.text ? `<p>${esc(g.text)}</p>` : ''}`;
+  else body = `<p class="gc-text">${esc(g.text)}</p>`;
+  const foot = isHer() ? `<button class="text-link" data-act="gift-love" data-id="${g.id}">${g.reaction ? 'دوستش داشتم' : 'دوستش داشتم؟'}</button>` : `<span class="muted" style="font-size:12px">${g.unlockAt && !giftOpenable(g) ? `قفل تا ${Cal.dayMonth(fromKey(g.unlockAt))}` : g.openedAt ? `باز شد، ${ago(g.openedAt)}` : 'هنوز باز نشده'}${g.redeemedAt ? '، استفاده شد' : ''}${g.reaction ? '، دوستش داشت' : ''}</span><button class="text-link" style="color:var(--muted)" data-act="gift-delete" data-id="${g.id}">حذف</button>`;
+  return `<div class="gift-card g-${g.type}">${head}${body}<div class="gc-foot">${foot}</div></div>`;
+}
+function giftRevealSheet(g) {
+  const him = pname();
+  openSheet(`${sheetHead(`از طرف ${him}`)}<div class="sheet-body"><div class="reveal">${giftCard({ ...g, openedAt: g.openedAt || Date.now() })}</div>
+    <button class="pill-btn red block" data-act="gift-love" data-id="${g.id}">دوستش داشتم</button><button class="pill-btn ghost block" data-act="sheet-close">بستن</button></div>`);
+}
+function sharingSheet() {
+  const partners = Object.entries(S.partners || {});
+  openSheet(`${sheetHead('اشتراک‌گذاری')}<div class="sheet-body">
+    <div class="card white">${partners.map(([uid, x]) => `<div class="list-row"><span class="avatar him" style="width:40px;height:40px;font-size:16px;border:0">${initial(x.name)}</span><div class="main"><b>${esc(x.name || 'بدون نام')}</b><small>از ${Cal.full(new Date(x.joinedAt))}، فقط مشاهده</small></div><button class="pill-btn ghost sm" data-act="remove-partner" data-v="${uid}">قطع دسترسی</button></div>`).join('')}</div>
+    <div class="card"><p style="font-size:14px;color:var(--ink-2)">می‌بینه: روزهای پریود، باروری، تخمک‌گذاری و PMS، و حال و درخواست‌هایی که خودت می‌فرستی. نمی‌بینه: علائم، احساسات ثبت‌شده، یادداشت‌های روزانه، برچسب‌ها، دما، وزن و تست‌ها.</p>
+    ${mode() === 'pregnancy' ? '<p class="data-meta">در حالت بارداری، اشتراک تقویم متوقفه.</p>' : ''}</div>
+    ${S.inviteCode ? invitePending() : `<button class="pill-btn ghost block" data-act="invite">دعوت یه نفر دیگه</button>`}</div>`);
+}
+
+// ---------- his ----------
+function hisUs(p) {
+  const her = herN(); const st = todayStatus(); const act = activeRequests();
+  const sent = (S.gifts || []).filter(g => g.uid === ME.uid).sort((a, b) => b.at - a.at);
+  const needs = st ? (st.needs || []).map(n => (NEEDS.find(x => x[0] === n) || [])[1]).filter(Boolean) : [];
+  const ph = PHASES[p.phase || 'unknown'] || PHASES.unknown;
+  const idea = ph.him.length ? ph.him[(todayDate().getDate()) % ph.him.length] : '';
+  let html = `<div class="her-hero"><div class="hh-face">${face(st && st.mood != null ? st.mood : 2, 72)}</div>
+    <div><div class="muted" style="font-size:13px">${st ? `حال ${her}، ${ago(st.u || Date.now())}` : `${her} هنوز حال امروزش رو نگفته`}</div>
+    <h2>${st && st.mood != null ? MOODS[st.mood] : 'منتظر خبر'}</h2>${st && st.text ? `<p>«${esc(st.text)}»</p>` : ''}
+    ${p.hasData && !(S.shared && S.shared.paused) ? `<p class="hh-phase">${p.inPeriod ? `روز ${fa(p.cycleDay)} پریود` : p.lateDays > 0 ? `پریود ${fa(p.lateDays)} روز عقب‌تر از تخمین` : `${fa(p.daysToNext)} روز تا پریود بعدی`}، ${(PHASES[p.phase] || {}).name || ''}</p>` : ''}</div></div>`;
+  html += `<div class="card white"><div class="card-label">درخواست‌های ${her} <span>${act.length ? `${fa(act.length)} فعال` : ''}</span></div>
+    ${act.length ? act.map(r => { const R = REQ_BY_ID[r.kind]; return `<div class="req-item ${r.status === 'open' ? 'urgent' : ''} ${r.kind === 'need_you' ? 'need' : ''}">${glyph(R[2], R[3])}<div class="main"><b>${R[1]}</b><small>${ago(r.at)}، ${REQ_STATUS[r.status]}</small></div>
+      <div class="req-actions">${r.status === 'open' ? `<button class="pill-btn sm ghost" data-act="req-ack" data-id="${r.id}" data-s="seen">دیدم</button>` : ''}${r.status !== 'onit' ? `<button class="pill-btn sm blush" data-act="req-ack" data-id="${r.id}" data-s="onit">دارم میام</button>` : ''}<button class="pill-btn sm red" data-act="req-ack" data-id="${r.id}" data-s="done">انجام شد</button></div></div>`; }).join('')
+      : `<p class="muted" style="font-size:14.5px">فعلاً درخواستی نداره. ${needs.length ? `امروز گفته لازم داره: ${needs.join('، ')}` : ''}</p>`}</div>`;
+  html += `<div class="card"><div class="card-label">یه چیزی براش بذار</div><div class="give-grid">
+    ${Object.entries(GIFT_KINDS).map(([k, v]) => `<button class="give" data-act="give" data-v="${k}">${glyph(v[1], v[2])}<span>${v[0]}</span></button>`).join('')}
+    <button class="give special" data-act="give" data-v="surprise">${glyph('lock', '#7B5CD6')}<span>سورپرایز قفل‌دار</span><small>مثلاً روز اول پریودش باز بشه</small></button></div></div>`;
+  if (idea) html += `<div class="card ${ph.card}"><div class="card-label">ایده‌ی امروز <span>${ph.name}</span></div><p style="font-size:15.5px">${idea}</p></div>`;
+  html += kitCard(p);
+  html += `<div class="card white"><div class="card-label">چیزهایی که براش گذاشتی <span>${fa(sent.length)}</span></div>${sent.length ? `<div class="gift-wall">${sent.slice(0, 20).map(giftCard).join('')}</div>` : '<p class="muted" style="font-size:14.5px">اولین یادداشت یا سورپرایز رو بفرست.</p>'}</div>`;
+  html += notesCard();
+  html += `<div class="center"><button class="text-link" style="color:var(--muted)" data-act="leave">قطع اتصال</button></div>`;
+  return html;
+}
+function requestsBanner() {
+  const act = activeRequests().filter(r => r.status === 'open'); if (!act.length) return '';
+  const r = act[0]; const R = REQ_BY_ID[r.kind];
+  return `<button class="req-banner ${r.kind === 'need_you' ? 'need' : ''}" data-act="go" data-r="us">${glyph(R[2], R[3])}<div><b>${herN()}: ${R[1]}</b><small>${ago(r.at)}${act.length > 1 ? `، و ${fa(act.length - 1)} درخواست دیگه` : ''}</small></div><span class="chev">${ic('chevL')}</span></button>`;
+}
+function giveSheet(kind) {
+  const her = herN(); const p = predict(engineState());
+  const nextStart = p.hasData && p.nextStart ? toKey(p.nextStart) : null;
+  let body = '';
+  if (kind === 'note') body = `<textarea class="input" id="g-text" maxlength="600" placeholder="هر چی از ته دلت می‌خوای بهش بگی…"></textarea>`;
+  if (kind === 'compliment') body = `<div class="stack">${COMPLIMENTS.map((c, i) => `<button class="choice ${i === 0 ? 'on' : ''}" data-act="pick-one" data-v="${esc(c)}"><div><b>${c}</b></div><span class="radio"></span></button>`).join('')}</div><input type="hidden" id="g-text" value="${esc(COMPLIMENTS[0])}">`;
+  if (kind === 'photo') body = `<label class="photo-drop" for="g-file"><span id="g-preview">${ic('plus')}<b>یه عکس انتخاب کن</b><small>خودکار کوچیک می‌شه</small></span></label><input type="file" id="g-file" accept="image/*" hidden><input class="input" id="g-text" maxlength="200" placeholder="یه جمله کنار عکس (اختیاری)" style="margin-top:10px">`;
+  if (kind === 'coupon') body = `<div class="chips">${COUPONS.map((c, i) => `<button class="chip ${i === 0 ? 'on' : ''}" style="--c:#0E8A70" data-act="pick-coupon" data-v="${esc(c)}">${c}</button>`).join('')}</div><input class="input" id="g-title" maxlength="60" value="${esc(COUPONS[0])}" style="margin-top:10px"><input class="input" id="g-text" maxlength="200" placeholder="توضیح (اختیاری)" style="margin-top:8px">`;
+  if (kind === 'song') body = `<input class="input ltr" id="g-url" placeholder="https://…  (اسپاتیفای، یوتیوب، ساندکلاد…)"><input class="input" id="g-title" maxlength="80" placeholder="اسم آهنگ" style="margin-top:8px"><input class="input" id="g-text" maxlength="200" placeholder="چرا این آهنگ؟ (اختیاری)" style="margin-top:8px">`;
+  if (kind === 'surprise') body = `<div class="seg" id="g-type">${Object.entries(GIFT_KINDS).filter(([k]) => k !== 'compliment').map(([k, v], i) => `<button class="${i === 0 ? 'on' : ''}" data-act="seg" data-v="${k}">${v[0]}</button>`).join('')}</div>
+    <textarea class="input" id="g-text" maxlength="600" placeholder="متن سورپرایز…" style="margin-top:10px"></textarea>
+    <div class="field" style="margin-top:10px"><label>کی باز بشه؟</label><div class="stack">
+      ${nextStart ? `<button class="choice on" data-act="pick-unlock" data-v="${nextStart}" data-l="روز اول پریود"><div><b>روز اول پریود بعدی</b><small>حدود ${Cal.dayMonth(fromKey(nextStart))}</small></div><span class="radio"></span></button>` : ''}
+      <button class="choice ${nextStart ? '' : 'on'}" data-act="pick-unlock" data-v="custom"><div><b>یه تاریخ دیگه</b></div><span class="radio"></span></button></div>
+      <input class="input ltr" type="date" id="g-date" min="${toKey(addDays(todayDate(), 1))}" value="${toKey(addDays(todayDate(), 7))}" style="margin-top:8px"></div>
+    <input type="hidden" id="g-unlock" value="${nextStart || 'custom'}"><input type="hidden" id="g-unlock-label" value="${nextStart ? 'روز اول پریود' : ''}">`;
+  openSheet(`${sheetHead(kind === 'surprise' ? 'سورپرایز قفل‌دار' : GIFT_KINDS[kind][0], `برای ${her}`)}<div class="sheet-body">${body}
+    <button class="pill-btn red block" data-act="give-send" data-v="${kind}">فرستادن</button><p class="fine">${her} همون لحظه که اپ رو باز کنه می‌بینه.</p></div>`);
+  if (kind === 'photo') $('#g-file').addEventListener('change', onPhotoPicked);
+}
+let pickedPhoto = null;
+async function onPhotoPicked(e) {
+  const f = e.target.files[0]; if (!f) return;
+  try { pickedPhoto = await shrinkImage(f, 1024, 600000); $('#g-preview').innerHTML = `<img src="${pickedPhoto}" alt="">`; }
+  catch (err) { toast('این عکس باز نشد'); }
+}
+function shrinkImage(file, maxSide, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const img = new Image(); const url = URL.createObjectURL(file);
+    img.onload = () => {
+      let { width: w, height: h } = img; const k = Math.min(1, maxSide / Math.max(w, h)); w = Math.round(w * k); h = Math.round(h * k);
+      const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h); URL.revokeObjectURL(url);
+      let q = 0.8, out = c.toDataURL('image/jpeg', q);
+      while (out.length > maxBytes && q > 0.35) { q -= 0.1; out = c.toDataURL('image/jpeg', q); }
+      out.length > maxBytes ? reject(new Error('too big')) : resolve(out);
+    };
+    img.onerror = reject; img.src = url;
+  });
+}
+
 function statusCard() {
   const st = todayStatus();
   if (!st) return `<div class="card peach"><div class="row">${face(2, 44)}<div><b style="font-weight:500">${herN()} هنوز حال امروزش رو نگفته</b><div class="muted" style="font-size:13.5px">یه یادداشت مهربون بفرست</div></div></div></div>`;
@@ -1128,7 +1419,7 @@ const A = {
   go: el => { closeSheet(false); location.hash = el.dataset.r; },
   'go-report': () => { closeSheet(false); location.hash = 'report'; },
   'go-library': () => { closeSheet(false); location.hash = 'library'; },
-  'to-auth': el => { authMode = el.dataset.mode; authError = ''; if (screen !== 'auth') authCtx = 'her'; if (!CLOUD) { screen = 'onboard'; onb.step = 0; } else screen = 'auth'; render(); },
+  'to-auth': el => { authMode = el.dataset.mode; authError = ''; if (screen !== 'auth') authCtx = 'her'; if (!CLOUD) { onb = freshOnb(); screen = 'onboard'; } else screen = 'auth'; render(); },
   'auth-back': () => { authError = ''; screen = pendingInvite ? 'invite' : 'welcome'; render(); },
   'sign-out': () => signOut(),
   'invite-signup': () => { authCtx = 'partner'; authMode = 'signup'; authError = ''; screen = 'auth'; render(); },
@@ -1249,7 +1540,7 @@ const A = {
     if (pinBuf.length === 4) { const ok = hashPin(pinBuf) === P.pin; pinBuf = ''; if (ok) { unlocked = true; try { sessionStorage.setItem('moonus.unlocked', '1'); } catch (e) {} render(); return; } render(); $('#pin-dots')?.classList.add('shake'); return; }
     render();
   },
-  num: el => { const { id, d, min, max } = el.dataset; const v = $('#v-' + id); const nv = Math.max(+min, Math.min(+max, +v.dataset.v + +d)); v.dataset.v = nv; v.querySelector('b').textContent = fa(nv); if (screen === 'onboard') onb[id] = nv; },
+  num: el => { const { id, d, min, max } = el.dataset; const v = $('#v-' + id); const nv = Math.max(+min, Math.min(+max, +v.dataset.v + +d)); v.dataset.v = nv; v.querySelector('b').textContent = fa(nv); if (screen === 'onboard') { onb[id] = nv; if (id === 'birthYear') v.querySelector('span').textContent = `میلادی، حدود ${fa(new Date().getFullYear() - nv)} سال`; } },
   'reminders-sheet': () => remindersSheet(),
   'rem-on': el => { const id = el.dataset.id; DB.settings({ reminders: { ...S.reminders, [id]: { ...(S.reminders[id] || {}), on: el.checked } } }); remindersSheet(); },
   'notif-perm': async () => { try { await Notification.requestPermission(); } catch (e) {} remindersSheet(); scheduleReminders(); },
@@ -1306,8 +1597,55 @@ const A = {
   'onb-back': () => { if (onb.step === 0) return; onb.step--; render(); },
   'onb-pick': el => { onb.picked = el.dataset.k; onb.unknown = false; render(); },
   'onb-unknown': () => { onb.unknown = !onb.unknown; if (onb.unknown) onb.picked = null; render(); },
-  'onb-mode': el => { onb.mode = el.dataset.v; onb.picked = null; onb.unknown = false; render(); },
+  'onb-account': el => { onb.account = el.dataset.v; onb.step = 1; render(); },
+  'onb-consent': el => { onb.consent[el.dataset.v] = !onb.consent[el.dataset.v]; render(); },
+  'onb-goal': el => {
+    const v = el.dataset.v; let g = onb.goals.includes(v) ? onb.goals.filter(x => x !== v) : [...onb.goals, v];
+    if (v === 'pregnant' && g.includes('pregnant')) g = g.filter(x => !['conceive', 'noperiod', 'meno'].includes(x));
+    if (['conceive', 'noperiod', 'meno'].includes(v) && g.includes(v)) g = g.filter(x => x !== 'pregnant');
+    onb.goals = g; const m = modeFromGoals(g); if (m !== onb.mode) { onb.mode = m; onb.picked = null; onb.unknown = false; } render();
+  },
+  'onb-skip': () => { onb.birthYear = null; onb.step++; render(); },
+  'onb-contra': el => { onb.hormonal = el.dataset.v; render(); },
+  'onb-join': () => joinWithCode(),
+  'onb-notify-yes': async () => { try { if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission(); } catch (e) {} finishOnboarding(); },
   'onb-done': () => finishOnboarding(),
+  legal: el => openSheet(`${sheetHead(el.dataset.v === 'terms' ? 'شرایط استفاده' : 'حریم خصوصی')}<div class="sheet-body"><div class="card white article-body" style="font-size:15px">${el.dataset.v === 'terms' ? TERMS_HTML : PRIVACY_HTML}</div><button class="pill-btn red block" data-act="sheet-close">متوجه شدم</button></div>`),
+
+  // ---- couple: hers ----
+  request: el => {
+    const v = el.dataset.v; const open = activeRequests().find(r => r.kind === v);
+    if (open) { toast(`قبلاً فرستادی: ${REQ_STATUS[open.status]}`); return; }
+    DB.addRequest(v); toast(v === 'need_you' ? `${pname()} همین الان خبردار می‌شه` : 'فرستاده شد');
+  },
+  'request-cancel': el => DB.deleteRequest(el.dataset.id),
+  'gift-open': el => { const g = S.gifts.find(x => x.id === el.dataset.id); if (!g) return; if (!g.openedAt) DB.updateGift(g.id, { openedAt: Date.now() }); giftRevealSheet(g); },
+  'gift-love': el => { const g = S.gifts.find(x => x.id === el.dataset.id); if (g && !g.reaction) DB.updateGift(g.id, { reaction: 'love' }); closeSheet(); },
+  'coupon-use': el => { DB.updateGift(el.dataset.id, { redeemedAt: Date.now() }); toast(`${pname()} خبردار شد که می‌خوای از کوپن استفاده کنی`); },
+  'sharing-sheet': () => sharingSheet(),
+  // ---- couple: his ----
+  'req-ack': el => { DB.updateRequest(el.dataset.id, { status: el.dataset.s, ackAt: Date.now() }); toast(el.dataset.s === 'done' ? 'عالی!' : 'بهش خبر دادیم'); },
+  'gift-delete': el => DB.deleteGift(el.dataset.id),
+  give: el => { pickedPhoto = null; giveSheet(el.dataset.v); },
+  'pick-one': el => { el.parentElement.querySelectorAll('.choice').forEach(b => b.classList.toggle('on', b === el)); $('#g-text').value = el.dataset.v; },
+  'pick-coupon': el => { el.parentElement.querySelectorAll('.chip').forEach(b => b.classList.toggle('on', b === el)); $('#g-title').value = el.dataset.v; },
+  'pick-unlock': el => { el.parentElement.querySelectorAll('.choice').forEach(b => b.classList.toggle('on', b === el)); $('#g-unlock').value = el.dataset.v; $('#g-unlock-label').value = el.dataset.l || ''; },
+  'give-send': el => {
+    const kind = el.dataset.v; const val = id => ($('#' + id)?.value || '').trim();
+    let g;
+    if (kind === 'note' || kind === 'compliment') { if (!val('g-text')) return toast('یه چیزی بنویس'); g = { type: kind, text: val('g-text') }; }
+    if (kind === 'photo') { if (!pickedPhoto) return toast('اول یه عکس انتخاب کن'); g = { type: 'photo', img: pickedPhoto, text: val('g-text') }; }
+    if (kind === 'coupon') { if (!val('g-title')) return toast('عنوان کوپن رو بنویس'); g = { type: 'coupon', title: val('g-title'), text: val('g-text') }; }
+    if (kind === 'song') { const u = val('g-url'); if (!/^https?:\/\//.test(u)) return toast('لینک باید با https شروع بشه'); g = { type: 'song', url: u, title: val('g-title'), text: val('g-text') }; }
+    if (kind === 'surprise') {
+      const type = segValue('g-type') || 'note'; if (!val('g-text')) return toast('متن سورپرایز رو بنویس');
+      const u = val('g-unlock'); const unlockAt = u === 'custom' ? val('g-date') : u; if (!unlockAt) return toast('تاریخ باز شدن رو انتخاب کن');
+      g = { type: type === 'coupon' ? 'coupon' : 'note', text: val('g-text'), unlockAt, unlockLabel: val('g-unlock-label') || null };
+      if (type === 'coupon') g.title = val('g-text').slice(0, 60);
+    }
+    DB.addGift(g); pickedPhoto = null; closeSheet(); toast('فرستاده شد');
+  },
+  'install-now': async () => { if (deferredInstall) { deferredInstall.prompt(); try { await deferredInstall.userChoice; } catch (e) {} deferredInstall = null; } closeSheet(); },
 };
 
 document.addEventListener('click', e => {
@@ -1345,6 +1683,27 @@ document.addEventListener('keydown', e => {
 });
 
 // =================================================================
+// Add to home screen (after sign-in, once per device)
+// =================================================================
+let deferredInstall = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredInstall = e; });
+const isStandalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+function maybeInstallPrompt() {
+  if (isStandalone() || P.installSeen || screen !== 'app' || $('.sheet')) return;
+  P.installSeen = true; savePrefs();
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !/crios|fxios/i.test(navigator.userAgent);
+  const shareIcon = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px"><path d="M12 15V4M8 7.5l4-3.5 4 3.5"/><path d="M6 11v7.5A1.5 1.5 0 0 0 7.5 20h9a1.5 1.5 0 0 0 1.5-1.5V11"/></svg>`;
+  const steps = ios
+    ? `<ol class="install-steps"><li>پایین صفحه‌ی سافاری، دکمه‌ی اشتراک ${shareIcon} رو بزن.</li><li>«Add to Home Screen» یا «افزودن به صفحه‌ی اصلی» رو انتخاب کن.</li><li>«Add» رو بزن. حالا Moon&Us مثل یه اپ روی صفحه‌ی گوشیته.</li></ol>`
+    : deferredInstall ? `<p style="color:var(--ink-2)">با یه لمس، Moon&Us مثل یه اپ روی صفحه‌ی گوشیت میاد؛ تمام‌صفحه، سریع‌تر و با اعلان.</p>`
+      : `<ol class="install-steps"><li>منوی مرورگر (سه نقطه) رو باز کن.</li><li>«Install app» یا «Add to Home screen» رو بزن.</li></ol>`;
+  openSheet(`${sheetHead('Moon&Us رو به گوشیت اضافه کن')}<div class="sheet-body"><div class="install-hero"><img src="icons/icon-192.png" alt="" width="72" height="72"><div><b>Moon&Us</b><small>همیشه یه لمس فاصله</small></div></div>
+    <div class="card white">${steps}</div>
+    ${deferredInstall && !ios ? `<button class="pill-btn red block" data-act="install-now">نصب</button>` : ''}<button class="pill-btn ghost block" data-act="sheet-close">بعداً</button>
+    <p class="fine">بعد از نصب، یک بار دوباره وارد حسابت شو.</p></div>`);
+}
+
+// =================================================================
 // Routing & boot
 // =================================================================
 function routeFromHash() { const h = location.hash.slice(1); return !h || h.startsWith('invite/') ? null : h; }
@@ -1368,6 +1727,7 @@ async function boot() {
   render(); readInviteFromHash();
   if (!CLOUD) {
     loadCache(); ME = { uid: 'local', role: 'her', spaceId: 'local', name: S.herName, email: '' };
+    if (FORCE_LOCAL && new URLSearchParams(location.search).get('as') === 'him') ME = { uid: 'local-him', role: 'partner', spaceId: 'local', name: 'میلاد', email: '' }; // dev preview of his side
     screen = S.onboarded ? 'app' : 'welcome'; route = routeFromHash() || 'cycle'; render(); scheduleReminders(); return;
   }
   try { Cloud = await import('./cloud.js'); await Cloud.init(CFG); } catch (e) { console.error('init', e && e.message); screen = 'error'; render(); return; }

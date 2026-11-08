@@ -69,6 +69,8 @@ export function watchOwner(sid, h) {
     snap(sub(sid, 'couple', 'status'), h.onStatus, h.onError),
     snap(sub(sid, 'couple', 'kit'), h.onKit, h.onError),
     watchNotes(sid, h.onNotes, h.onError),
+    watchList(sid, 'gifts', 100, h.onGifts, h.onError),
+    watchList(sid, 'requests', 60, h.onRequests, h.onError),
   ];
   return () => u.forEach(f => f());
 }
@@ -79,9 +81,18 @@ export function watchViewer(sid, h) {
     snap(sub(sid, 'couple', 'status'), h.onStatus, h.onError),
     snap(sub(sid, 'couple', 'kit'), h.onKit, h.onError),
     watchNotes(sid, h.onNotes, h.onError),
+    watchList(sid, 'gifts', 100, h.onGifts, h.onError),
+    watchList(sid, 'requests', 60, h.onRequests, h.onError),
   ];
   return () => u.forEach(f => f());
 }
+function watchList(sid, name, n, cb, onError) {
+  const q = F.query(F.collection(db, 'spaces', sid, name), F.orderBy('at', 'desc'), F.limit(n));
+  return F.onSnapshot(q, qs => { const a = []; qs.forEach(d => a.push({ id: d.id, ...d.data() })); cb(a); }, onError);
+}
+export const addItem = (sid, name, data) => F.addDoc(F.collection(db, 'spaces', sid, name), data);
+export const updateItem = (sid, name, id, patch) => F.updateDoc(sub(sid, name, id), patch);
+export const deleteItem = (sid, name, id) => F.deleteDoc(sub(sid, name, id));
 function watchNotes(sid, cb, onError) {
   return F.onSnapshot(F.collection(db, 'spaces', sid, 'notes'), qs => { const a = []; qs.forEach(d => a.push({ id: d.id, ...d.data() })); a.sort((x, y) => x.at - y.at); cb(a); }, onError);
 }
@@ -119,7 +130,7 @@ export const sendFeedback = (uid, data) => F.addDoc(F.collection(db, 'feedback')
 
 // ---------- delete everything (owner) ----------
 export async function deleteSpaceAll(sid, inviteCode) {
-  for (const name of ['logs', 'notes']) {
+  for (const name of ['logs', 'notes', 'gifts', 'requests']) {
     const qs = await F.getDocs(F.collection(db, 'spaces', sid, name));
     let batch = F.writeBatch(db); let n = 0;
     for (const d of qs.docs) { batch.delete(d.ref); if (++n % 400 === 0) { await batch.commit(); batch = F.writeBatch(db); } }

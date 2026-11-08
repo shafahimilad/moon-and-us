@@ -54,3 +54,18 @@ Labels: **Implemented and verified** · **Implemented but requires external veri
 - Push server (paid Firebase plan) for guaranteed background reminders.
 - Developer accounts + backend for wearables; LLM provider for chat; moderation for community.
 - Two-account test of sharing on the live site.
+
+## Update 2026-11-08 (evening)
+
+| Area | Status | Notes |
+|---|---|---|
+| Landing | Implemented and verified | Full-screen intro slides written only for her; no mention of a partner before sign-in. |
+| Sign-up flow | Implemented and verified | Account type (track my own cycle / I have a code), consent (terms, privacy, health-data processing), goals (multi-select, sets the mode), encouragement screen, name, birth year, hormonal contraception, dates, reminder opt-in. |
+| Partner joins with a code | Implemented but requires external verification | Code entry in sign-up as well as the invite link; needs a two-account test on the live site. |
+| Her page ("Us") | Implemented and verified (local) | Gifts from him with a reveal, locked surprises, one-tap mood, one-tap requests with live status, "I need you now", gift wall, coupons she can redeem, messages. |
+| His page ("Us") | Implemented and verified (local) | Her mood first, her requests with seen / on my way / done, send a note, photo, coupon, song link, ready-made compliment or a surprise locked until a date (e.g. her next period), idea of the day, care kit, sent history. |
+| Gifts & requests rules | Implemented and verified | 11 emulator tests: partner can send gifts but not edit them; only she creates requests; partner can only acknowledge. |
+| Live alerts between phones | Implemented but requires external verification | System notification when the other person's app is open or in the background; true push while closed needs a push server (paid Firebase plan). |
+| Plus-style screens | Implemented and verified | Hormone pattern chart (textbook shape, labelled as not her measurements), "your typical cycle", cramp review by period day, period strength grid. |
+| Install prompt | Implemented and verified | After sign-in, once per device: one-tap install on Android/Chrome, step-by-step on iPhone Safari. |
+| Theme | Implemented and verified | Follows the phone's light/dark setting; dark theme matches the reference app's colours. |

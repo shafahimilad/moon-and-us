@@ -97,6 +97,29 @@ service cloud.firestore {
       match /couple/kit {
         allow read, write: if isMember(sid);
       }
+      // Gifts: written by a member for the other (notes, photos, coupons, locked surprises).
+      // She may only mark them opened / redeemed / loved; the author may delete.
+      match /gifts/{giftId} {
+        allow read: if isMember(sid);
+        allow create: if isMember(sid)
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.type in ['note', 'photo', 'coupon', 'song', 'compliment']
+          && (!('img' in request.resource.data) || (request.resource.data.img is string && request.resource.data.img.size() < 800000))
+          && (!('text' in request.resource.data) || request.resource.data.text.size() <= 1000);
+        allow update: if isOwner(sid)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['openedAt', 'redeemedAt', 'reaction']);
+        allow delete: if isOwner(sid) || (isMember(sid) && resource.data.uid == request.auth.uid);
+      }
+      // Requests: she asks (one tap), viewers can only acknowledge.
+      match /requests/{reqId} {
+        allow read: if isMember(sid);
+        allow create: if isOwner(sid) && request.resource.data.uid == request.auth.uid && request.resource.data.status == 'open';
+        allow update: if isOwner(sid)
+          || (isViewer(sid)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'ackAt'])
+            && request.resource.data.status in ['seen', 'onit', 'done']);
+        allow delete: if isOwner(sid);
+      }
       match /notes/{noteId} {
         allow read: if isMember(sid);
         allow create: if isMember(sid)

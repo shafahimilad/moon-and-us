@@ -73,6 +73,8 @@ export function viewInsights(ctx) {
   if (compare && compare.length === 2) html += compareBlock(S, a, compare);
   html += flowBlock(S, a);
   if (mode === 'perimenopause') html += perimenoBlock(S, a);
+  html += typicalCycleBlock(S, a);
+  html += crampsReviewBlock(S, a);
   html += patternsBlock(S, a);
   html += feelingsBlock(S, a);
   html += painBlock(S, a, p);
@@ -122,8 +124,41 @@ function compareBlock(S, a, keys) {
 function flowBlock(S, a) {
   const ps = a.periods.slice(-6);
   if (!ps.length) return '';
-  const rows = ps.map(pd => { const f = periodFlow(S, pd); return `<div class="flow-row"><span>${Cal.short(fromKey(pd.start))}</span><div class="flow">${f.map(v => `<i style="height:${v ? 6 + v * 8 : 3}px;opacity:${v ? 1 : .3}"></i>`).join('')}</div><span class="muted">${fa(pd.length)} روز</span></div>`; }).join('');
-  return card('مدت و شدت خونریزی', `${fa(ps.length)} پریود اخیر`, rows + meta('ارتفاع هر ستون: لکه‌بینی، کم، متوسط، زیاد. روزهای بدون ثبت کوتاه‌ترین ستون‌ان (ثبت نشده، نه «بدون خونریزی»).'));
+  const maxLen = Math.max(...ps.map(p => p.length), 5);
+  const col = { spotting: '#F7C3C0', light: '#F59A95', medium: '#E5484D', heavy: '#A3001B' };
+  const rows = ps.slice().reverse().map(pd => {
+    const s0 = fromKey(pd.start); let cells = '';
+    for (let i = 0; i < maxLen; i++) { const l = S.logs[toKey(addDays(s0, i))]; cells += `<i style="background:${l && l.period ? col[l.period] : 'transparent'}"></i>`; }
+    return `<div class="ps-row"><span>${Cal.short(s0)}</span><div class="ps-cells" style="--n:${maxLen}">${cells}</div></div>`;
+  }).join('');
+  return card('شدت پریود', `${fa(ps.length)} پریود اخیر`, `${rows}<div class="ps-row axis"><span></span><div class="ps-cells" style="--n:${maxLen}">${Array.from({ length: maxLen }, (_, i) => `<i>${fa(i + 1)}</i>`).join('')}</div></div>
+    <div class="legend" style="justify-content:flex-start">${Object.entries({ spotting: 'لکه‌بینی', light: 'کم', medium: 'متوسط', heavy: 'زیاد' }).map(([k, v]) => `<span><i style="background:${col[k]}"></i>${v}</span>`).join('')}</div>`
+    + meta('خونه‌ی خالی یعنی برای اون روز چیزی ثبت نشده.'));
+}
+
+function typicalCycleBlock(S, a) {
+  const r = symptomByCycleDay(S, a, { cycles: 6, cats: ['emotion', 'energy', 'mind'], limit: 4 });
+  if (r.cycles < 2) return card('چرخه‌ی معمول تو', '', empty('بعد از دو چرخه‌ی کامل با ثبت احساسات، اینجا می‌بینی هر حس معمولاً کجای چرخه‌ات پیدا می‌شه.'));
+  const L = a.avgCycle, P = a.avgPeriod, ov = L - ((S.profile && S.profile.luteal) || 14);
+  const pct = d => (Math.max(0, Math.min(L, d)) / L * 100).toFixed(1);
+  const top = `<div class="tc-axis"><i class="tc-period" style="right:0;width:${pct(P)}%"></i><i class="tc-fertile" style="right:${pct(ov - 5)}%;width:${pct(7)}%"></i><b class="tc-ov" style="right:${pct(ov)}%"></b></div>`;
+  const rows = r.rows.map(row => `<div class="tc-row"><span>${esc(row.label)}</span><div class="tc-track">${row.arr.map((v, i) => v ? `<i style="right:${pct(i)}%;width:${Math.max(1.6, 100 / L).toFixed(1)}%;opacity:${(0.35 + 0.65 * v / r.cycles).toFixed(2)};background:${row.color}"></i>` : '').join('')}</div></div>`).join('');
+  return card('چرخه‌ی معمول تو', `${fa(r.cycles)} چرخه`, `<div class="tc-hump"><div class="h1" style="width:${pct(ov)}%"></div><div class="h2"></div></div>${top}${rows || empty('هنوز احساسی دو بار یا بیشتر ثبت نشده.')}`
+    + meta(`میانگین چرخه ${fa(L)} روز؛ قرمز: پریود، آبی: پنجره‌ی باروری. نشانه‌ها جاهایی‌ان که اون حس در چرخه‌های قبلی ثبت شده (همزمانی، نه علت).`), 'white');
+}
+
+function crampsReviewBlock(S, a) {
+  const cycles = a.cycles.filter(c => !c.excluded && !c.outlier).slice(-6);
+  const days = 11; const sum = new Array(days).fill(0), cnt = new Array(days).fill(0);
+  let any = false;
+  for (const c of cycles) { const s0 = fromKey(c.start); for (let i = 0; i < days; i++) { const l = S.logs[toKey(addDays(s0, i))]; if (l && tagList(l).includes('pain:cramps')) { any = true; sum[i] += l.painLevel || 1; cnt[i]++; } } }
+  if (!any) return '';
+  const cols = ['#9DB8F5', '#4A78E0', '#1F3FA8', '#0B1F66'];
+  const bars = sum.map((v, i) => { const avg = cnt[i] ? v / cnt[i] : 0; const share = cnt[i] / cycles.length; return `<div class="cr-b"><i style="height:${cnt[i] ? 10 + avg * 16 * Math.max(.4, share) : 0}px;background:${cols[Math.min(3, Math.round(avg))]}"></i></div>`; }).join('');
+  const P = Math.round(a.avgPeriod);
+  return card('مرور دل‌درد', `${fa(cycles.length)} چرخه‌ی اخیر`, `<div class="chips" style="margin-bottom:10px">${['خفیف', 'متوسط', 'شدید'].map((l, i) => `<span class="chip static on" style="--c:${cols[i + 1]}">${l}</span>`).join('')}</div>
+    <div class="cr-bars">${bars}</div><div class="cr-line"><i style="width:${(P / days * 100).toFixed(0)}%"></i></div><div class="cr-axis">${Array.from({ length: days }, (_, i) => `<span>${i % 2 === 0 ? fa(i + 1) : ''}</span>`).join('')}</div>`
+    + meta('ارتفاع ستون: میانگین شدت دل‌درد در اون روز از پریود، در چرخه‌هایی که ثبت شده. خط قرمز: میانگین طول پریود.'), 'white');
 }
 
 function patternsBlock(S, a) {

@@ -100,3 +100,25 @@ test('feedback is create-only', async () => {
   await assertFails(getDoc(ref));
   await assertFails(addDoc(collection(db, 'feedback'), { uid: 'someone-else', text: 'x' }));
 });
+
+test('gifts: partner sends, she opens/loves, partner cannot edit after', async () => {
+  await assertSucceeds(join('him'));
+  const him = as('him'), her = as('her');
+  const ref = await assertSucceeds(addDoc(collection(him, 'spaces', SID, 'gifts'), { uid: 'him', type: 'note', text: 'دوستت دارم', at: 1, openedAt: null, redeemedAt: null, reaction: null }));
+  await assertFails(addDoc(collection(him, 'spaces', SID, 'gifts'), { uid: 'him', type: 'script', text: 'x', at: 1 }));
+  await assertFails(addDoc(collection(him, 'spaces', SID, 'gifts'), { uid: 'her', type: 'note', text: 'spoof', at: 1 }));
+  await assertSucceeds(updateDoc(doc(her, 'spaces', SID, 'gifts', ref.id), { openedAt: 2, reaction: 'love' }));
+  await assertFails(updateDoc(doc(her, 'spaces', SID, 'gifts', ref.id), { text: 'changed' }));
+  await assertFails(updateDoc(doc(him, 'spaces', SID, 'gifts', ref.id), { openedAt: 3 }));
+  await assertFails(getDoc(doc(as('stranger'), 'spaces', SID, 'gifts', ref.id)));
+});
+
+test('requests: only she creates; partner can only acknowledge', async () => {
+  await assertSucceeds(join('him'));
+  const him = as('him'), her = as('her');
+  await assertFails(addDoc(collection(him, 'spaces', SID, 'requests'), { uid: 'him', kind: 'hug', at: 1, status: 'open' }));
+  const ref = await assertSucceeds(addDoc(collection(her, 'spaces', SID, 'requests'), { uid: 'her', kind: 'hug', at: 1, status: 'open', ackAt: null }));
+  await assertSucceeds(updateDoc(doc(him, 'spaces', SID, 'requests', ref.id), { status: 'onit', ackAt: 2 }));
+  await assertFails(updateDoc(doc(him, 'spaces', SID, 'requests', ref.id), { kind: 'space' }));
+  await assertFails(updateDoc(doc(him, 'spaces', SID, 'requests', ref.id), { status: 'open' }));
+});
