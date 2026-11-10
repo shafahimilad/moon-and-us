@@ -1,5 +1,5 @@
 // Moon&Us service worker — offline app shell + best-effort reminder delivery
-const CACHE = 'moonus-v6';
+const CACHE = 'moonus-v7';
 const SHELL = [
   './', './index.html', './css/style.css', './js/content.js', './js/cycle.js', './js/app.js', './js/insights.js',
   './js/cloud.js', './js/firebase-config.js', './manifest.webmanifest', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png',
@@ -44,8 +44,18 @@ async function deliverDue() {
   }
   await c.put('delivered.json', new Response(JSON.stringify([...done].slice(-200))));
 }
+// Web push (sent by the GitHub Actions sender through Firebase Cloud Messaging)
+self.addEventListener('push', e => {
+  let d = {};
+  try { const j = e.data ? e.data.json() : {}; d = j.data || j.notification || j; } catch (_) { d = { body: e.data ? e.data.text() : '' }; }
+  e.waitUntil(self.registration.showNotification(d.title || 'Moon&Us', { body: d.body || '', tag: d.tag || undefined, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', lang: 'fa', dir: 'rtl', data: { url: d.url || './index.html#cycle' } }));
+});
 self.addEventListener('periodicsync', e => { if (e.tag === 'moonus-reminders') e.waitUntil(deliverDue()); });
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  e.waitUntil(self.clients.matchAll({ type: 'window' }).then(ws => (ws[0] ? ws[0].focus() : self.clients.openWindow('./index.html#cycle'))));
+  const url = (e.notification.data && e.notification.data.url) || './index.html#cycle';
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(ws => {
+    if (ws[0]) { ws[0].focus(); try { ws[0].navigate && ws[0].navigate(new URL(url, self.registration.scope).href); } catch (_) {} return; }
+    return self.clients.openWindow(url);
+  }));
 });

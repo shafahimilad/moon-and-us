@@ -133,3 +133,16 @@ test('first-time setup: queued writes (no waiting) pass in order, and repeating 
   await assertSucceeds(getDoc(doc(db, 'spaces', uid, 'private', 'settings')));
   await assertFails(setDoc(doc(as('other'), 'spaces', uid), { ownerUid: 'other', herName: 'X', partners: {}, inviteCode: null }));
 });
+
+test('push schedule is private; outbox is write-only and direction-checked', async () => {
+  await assertSucceeds(join('him'));
+  await assertSucceeds(setDoc(doc(as('her'), 'users', 'her', 'push', 'schedule'), { items: [] }));
+  await assertFails(getDoc(doc(as('him'), 'users', 'her', 'push', 'schedule')));
+  const ev = (from, to) => ({ from, to, title: 't', body: 'b', tag: 'x', url: './', at: 1 });
+  await assertSucceeds(addDoc(collection(as('her'), 'spaces', SID, 'outbox'), ev('her', 'partners')));
+  await assertSucceeds(addDoc(collection(as('him'), 'spaces', SID, 'outbox'), ev('him', 'owner')));
+  await assertFails(addDoc(collection(as('him'), 'spaces', SID, 'outbox'), ev('him', 'partners')));
+  await assertFails(addDoc(collection(as('him'), 'spaces', SID, 'outbox'), ev('her', 'owner')));
+  await assertFails(addDoc(collection(as('stranger'), 'spaces', SID, 'outbox'), ev('stranger', 'owner')));
+  await assertFails(getDocs(collection(as('her'), 'spaces', SID, 'outbox')));
+});

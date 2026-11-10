@@ -5,7 +5,7 @@
   "description": "Moon&Us — period and cycle tracker for two",
   "scripts": {
     "test": "node --test tests/engine.test.cjs",
-    "test:rules": "node node_modules/firebase-tools/lib/bin/firebase.js emulators:exec --only firestore --project demo-moonus \"node --test tests/rules.test.mjs\"",
+    "test:rules": "node node_modules/firebase-tools/lib/bin/firebase.js emulators:exec --only firestore --project demo-moonus \"node --test --test-concurrency=1 tests/rules.test.mjs tests/sender.test.mjs\"",
     "serve": "python -m http.server 5173 --bind 127.0.0.1"
   },
   "devDependencies": {

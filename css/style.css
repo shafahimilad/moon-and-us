@@ -759,3 +759,13 @@ a.card.list-row { text-decoration: none; color: inherit; }
 .ps-row.axis .ps-cells i { box-shadow: none; height: auto; text-align: center; font-size: 11px; color: var(--muted); }
 
 .h-legend { grid-template-columns: 1fr; }
+
+/* draggable wheel */
+.wheel svg[data-drag] { touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+.wheel-center { border-radius: 50%; inset: 21%; }
+.wheel-center .big small { font-size: .6em; font-weight: 400; color: var(--muted); }
+.wc-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 4px; }
+.wc-actions .text-link { font-size: 13.5px; }
+.wmark { transition: transform .08s linear; }
+.wheel-hint-pill { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--sky); color: var(--ink); border-radius: 100px; padding: 10px 18px; margin-top: 4px; font-size: 14px; animation: fade .4s ease; }
+.wheel-hint-pill .text-link { font-size: 14px; white-space: nowrap; }

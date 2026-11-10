@@ -2,14 +2,14 @@
 // Layout and access rules: see firestore.rules.
 const V = '10.12.2';
 const BASE = `https://www.gstatic.com/firebasejs/${V}/`;
-let A, F, auth, db;
+let A, F, M, auth, db, appRef, messaging;
 
 export async function init(cfg, opts = {}) {
   const [appM, authM, fsM] = await Promise.all([
     import(BASE + 'firebase-app.js'), import(BASE + 'firebase-auth.js'), import(BASE + 'firebase-firestore.js'),
   ]);
   A = authM; F = fsM;
-  const app = appM.initializeApp(cfg);
+  const app = appM.initializeApp(cfg); appRef = app;
   auth = A.getAuth(app);
   try { db = F.initializeFirestore(app, { experimentalAutoDetectLongPolling: true, localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) }); }
   catch (e) { db = F.getFirestore(app); }
@@ -137,6 +137,26 @@ export async function leaveSpace(sid, uid) {
   await F.updateDoc(spaceRef(sid), { [`partners.${uid}`]: F.deleteField() }).catch(() => {});
   await setUserDoc(uid, { spaceId: null });
 }
+
+// ---------- push notifications (Firebase Cloud Messaging, web push) ----------
+export async function pushSupported() {
+  try { if (!M) M = await import(BASE + 'firebase-messaging.js'); return await M.isSupported(); } catch (e) { return false; }
+}
+/** Registers this device for push and stores its token on the user's own document. */
+export async function enablePush(uid, vapidKey, reg) {
+  if (!(await pushSupported())) throw Object.assign(new Error('push unsupported'), { code: 'push/unsupported' });
+  messaging = messaging || M.getMessaging(appRef);
+  const token = await M.getToken(messaging, { vapidKey, serviceWorkerRegistration: reg });
+  if (!token) throw Object.assign(new Error('no token'), { code: 'push/no-token' });
+  await F.setDoc(userRef(uid), { pushTokens: F.arrayUnion(token), pushAt: Date.now() }, { merge: true });
+  return token;
+}
+export const setPushDiscreet = (uid, on) => F.setDoc(userRef(uid), { pushDiscreet: !!on }, { merge: true });
+/** Her upcoming reminders (times + already-worded text). The sender only reads this, never her logs. */
+export const savePushSchedule = (uid, items) => F.setDoc(F.doc(db, 'users', uid, 'push', 'schedule'), { items, updatedAt: Date.now() }, { merge: true });
+/** Short event for the other person (request, gift, acknowledgement, note); the sender delivers and deletes it. */
+export const addOutbox = (sid, ev) => F.addDoc(F.collection(db, 'spaces', sid, 'outbox'), { ...ev, at: Date.now() });
+export function addItemWithId(sid, name, data) { const ref = F.doc(F.collection(db, 'spaces', sid, name)); return { id: ref.id, done: F.setDoc(ref, data) }; }
 
 // ---------- support ----------
 export const sendFeedback = (uid, data) => F.addDoc(F.collection(db, 'feedback'), { ...data, uid, createdAt: Date.now() });

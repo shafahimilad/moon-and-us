@@ -200,22 +200,37 @@ const DB = {
   kit(kit) { S.kit = kit; saveCache(); scheduleRender(); if (CLOUD) Cloud.saveKit(ME.spaceId, kit).catch(syncErr); },
   addNote(text) {
     const n = { from: ME.role, uid: ME.uid || 'local', name: ME.name || '', text, at: Date.now() };
-    if (CLOUD) Cloud.addNote(ME.spaceId, n).catch(syncErr);
+    if (CLOUD) { Cloud.addNote(ME.spaceId, n).catch(syncErr); pushEvent(isHer() ? 'partners' : 'owner', ME.name || 'Moon&Us', 'یه یادداشت جدید برات نوشت', 'note-' + n.at, 'us'); }
     else { S.notes.push({ id: Date.now().toString(36), ...n }); saveCache(); scheduleRender(); }
   },
   addGift(g) {
     const doc = { ...g, uid: ME.uid || 'local', fromName: ME.name || '', at: Date.now(), openedAt: null, redeemedAt: null, reaction: null };
-    if (CLOUD) return Cloud.addItem(ME.spaceId, 'gifts', doc).catch(syncErr);
+    if (CLOUD) {
+      const { id, done } = Cloud.addItemWithId(ME.spaceId, 'gifts', doc); done.catch(syncErr);
+      if (!g.unlockAt) pushEvent('owner', 'Moon&Us', `${ME.name || 'یه نفر'} یه چیزی برات گذاشت`, 'gift-' + id, 'us');
+      return;
+    }
     S.gifts.push({ id: 'g' + Date.now().toString(36), ...doc }); saveCache(); scheduleRender();
   },
   updateGift(id, patch) { S.gifts = S.gifts.map(g => g.id === id ? { ...g, ...patch } : g); saveCache(); scheduleRender(); if (CLOUD) Cloud.updateItem(ME.spaceId, 'gifts', id, patch).catch(syncErr); },
   deleteGift(id) { S.gifts = S.gifts.filter(g => g.id !== id); saveCache(); scheduleRender(); if (CLOUD) Cloud.deleteItem(ME.spaceId, 'gifts', id).catch(syncErr); },
   addRequest(kind) {
     const doc = { kind, uid: ME.uid || 'local', at: Date.now(), status: 'open', ackAt: null };
-    if (CLOUD) return Cloud.addItem(ME.spaceId, 'requests', doc).catch(syncErr);
+    if (CLOUD) {
+      const { id, done } = Cloud.addItemWithId(ME.spaceId, 'requests', doc); done.catch(syncErr);
+      pushEvent('partners', S.herName || 'Moon&Us', (REQ_BY_ID[kind] || [, 'درخواست'])[1], 'req-' + id, 'us');
+      return;
+    }
     S.requests.push({ id: 'r' + Date.now().toString(36), ...doc }); saveCache(); scheduleRender();
   },
-  updateRequest(id, patch) { S.requests = S.requests.map(r => r.id === id ? { ...r, ...patch } : r); saveCache(); scheduleRender(); if (CLOUD) Cloud.updateItem(ME.spaceId, 'requests', id, patch).catch(syncErr); },
+  updateRequest(id, patch) {
+    const r0 = S.requests.find(r => r.id === id);
+    S.requests = S.requests.map(r => r.id === id ? { ...r, ...patch } : r); saveCache(); scheduleRender();
+    if (CLOUD) {
+      Cloud.updateItem(ME.spaceId, 'requests', id, patch).catch(syncErr);
+      if (!isHer() && patch.status && r0) pushEvent('owner', ME.name || 'Moon&Us', `${REQ_STATUS[patch.status]}: ${(REQ_BY_ID[r0.kind] || [, ''])[1]}`, 'ack-' + id + patch.status, 'us');
+    }
+  },
   deleteRequest(id) { S.requests = S.requests.filter(r => r.id !== id); saveCache(); scheduleRender(); if (CLOUD) Cloud.deleteItem(ME.spaceId, 'requests', id).catch(syncErr); },
   deleteNote(id) { S.notes = S.notes.filter(n => n.id !== id); saveCache(); scheduleRender(); if (CLOUD) Cloud.deleteNote(ME.spaceId, id).catch(syncErr); },
 };
@@ -332,6 +347,7 @@ function scheduleReminders() {
   clearTimeout(remTimer);
   remTimer = setTimeout(async () => {
     tickReminders();
+    uploadPushSchedule();
     try {
       if (!('caches' in window) || !isHer()) return;
       const list = upcomingReminders(7).map(r => ({ id: r.id, when: r.when.getTime(), body: reminderText(r) }));
@@ -707,13 +723,93 @@ function wheelSVG(p) {
     const cat = log && log.tags && Object.keys(log.tags)[0];
     marks += cat && CAT_BY_ID[cat] ? `<circle cx="${x}" cy="${y}" r="3.4" fill="${CAT_BY_ID[cat].color}"/>` : `<circle cx="${x}" cy="${y}" r="1.7" fill="var(--dot)"/>`;
   }
-  let today = '';
-  if (p.cycleDay <= N) {
-    const [x, y] = pt(-90 + (p.cycleDay - 0.5) * step, R);
-    today = `<g class="tmark"><circle cx="${x}" cy="${y}" r="24" fill="var(--surface)"/></g><text x="${x}" y="${(+y - 5).toFixed(1)}" text-anchor="middle" font-size="9.5" fill="var(--muted)" font-family="Vazirmatn">روز</text><text x="${x}" y="${(+y + 12).toFixed(1)}" text-anchor="middle" font-size="17" font-weight="600" fill="var(--ink)" font-family="Vazirmatn">${fa(p.cycleDay)}</text>`;
-  }
-  return `<svg viewBox="-170 -170 340 340" role="img" aria-label="دایره‌ی چرخه"><circle r="${R}" fill="none" stroke="var(--track)" stroke-width="${W}"/>${arcs}${marks}${today}</svg>`;
+  // selected-day marker (today by default); dragged around the ring
+  const todayIdx = Math.min(N - 1, p.cycleDay - 1);
+  let sel = WH.selKey ? dayDiff(p.lastStart, fromKey(WH.selKey)) : todayIdx;
+  if (!(sel >= 0 && sel < N)) { sel = todayIdx; WH.selKey = null; }
+  Object.assign(WH, { N, step, R, p, todayIdx, sel });
+  const [mx, my] = pt(-90 + (sel + 0.5) * step, R);
+  const hint = WH.showHint ? wheelHintArt(todayIdx, step, R, N) : '';
+  const mark = `<g id="wmark" class="wmark" transform="translate(${mx} ${my})"><g class="tmark"><circle r="24" fill="var(--surface)"/></g><circle class="wm-ring" r="27" fill="none" stroke="var(--teal)" stroke-width="2" opacity="${sel === todayIdx ? 0 : 1}"/><text y="-5" text-anchor="middle" font-size="9.5" fill="var(--muted)" font-family="Vazirmatn">روز</text><text id="wm-day" y="12" text-anchor="middle" font-size="17" font-weight="600" fill="var(--ink)" font-family="Vazirmatn">${fa(sel + 1)}</text></g>`;
+  return `<svg viewBox="-170 -170 340 340" role="img" aria-label="دایره‌ی چرخه؛ برای دیدن روزهای دیگه بکش" data-drag="1"><circle r="${R}" fill="none" stroke="var(--track)" stroke-width="${W}"/>${arcs}${marks}${hint}${mark}</svg>`;
 }
+// ---- wheel interaction state ----
+const WH = { selKey: null, showHint: false };
+function wheelHintArt(todayIdx, step, R, N) {
+  const a0 = -90 + (todayIdx + 0.5) * step, a1 = a0 + Math.min(70, step * 6);
+  const P = a => [(R * Math.cos(a * Math.PI / 180)).toFixed(1), (R * Math.sin(a * Math.PI / 180)).toFixed(1)];
+  const [x0, y0] = P(a0), [x1, y1] = P(a1);
+  const path = `M${x0} ${y0} A${R} ${R} 0 0 1 ${x1} ${y1} A${R} ${R} 0 0 0 ${x0} ${y0}`;
+  return `<g class="wheel-hint-art" pointer-events="none"><path d="M${x0} ${y0} A${R} ${R} 0 0 1 ${x1} ${y1}" fill="none" stroke="#fff" stroke-width="3" stroke-dasharray="2 7" stroke-linecap="round" opacity=".8"/>
+    <g><circle r="25" fill="none" stroke="#fff" stroke-width="2.5" opacity=".9"/><path d="M-4 6 V-10 a4 4 0 0 1 8 0 V2 l7 2 a4 4 0 0 1 3 4 l-1 12 h-17 l-6-9 a3 3 0 0 1 5-3z" transform="translate(6 18) scale(.9)" fill="#fff" stroke="#2B2A28" stroke-width="1.2"/>
+      <animateMotion dur="2.6s" repeatCount="indefinite" path="${path}" keyPoints="0;1;0" keyTimes="0;.5;1" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/></g></g>`;
+}
+let hapticLabel = null;
+function haptic() {
+  try { if (navigator.vibrate && navigator.vibrate(7)) return; } catch (e) {}
+  // iOS 18+: tapping a hidden native switch gives the system "tick" haptic in Safari
+  try {
+    if (!hapticLabel) {
+      hapticLabel = document.createElement('label'); hapticLabel.setAttribute('aria-hidden', 'true');
+      hapticLabel.style.cssText = 'position:fixed;left:-100px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none';
+      const i = document.createElement('input'); i.type = 'checkbox'; i.setAttribute('switch', ''); i.tabIndex = -1;
+      hapticLabel.appendChild(i); document.body.appendChild(hapticLabel);
+    }
+    hapticLabel.click();
+  } catch (e) {}
+}
+function wheelCenterFor(p, d) {
+  const t = p.today; const k = toKey(d); const you = isHer();
+  if (sameDay(d, t)) return null; // today's center is built by cycleHome
+  const log = S.logs[k]; const info = p.dayMap.get(k) || {};
+  const idx = dayDiff(p.lastStart, d);
+  let big, sub = '';
+  if (log && BLEED.includes(log.period)) big = 'پریود <small>(ثبت‌شده)</small>';
+  else if (info.predPeriod && d > t) big = 'پریود احتمالی';
+  else if (info.ovulation) big = 'تخمک‌گذاری <small>(تخمینی)</small>';
+  else if (info.fertile) big = 'روزهای باروری <small>(تخمینی)</small>';
+  else if (info.pms && d > t) big = 'PMS احتمالی';
+  else big = `روز <span class="num">${fa(idx + 1)}</span> چرخه`;
+  if (d > t && p.nextStart && !info.predPeriod) { const n = dayDiff(d, p.nextStart); if (n > 0) sub = `${fa(n)} روز مونده به پریود`; }
+  if (d < t && you) { const n = logChips(log).length; sub = n ? `${fa(n)} مورد ثبت شده` : 'چیزی ثبت نشده'; }
+  const ph = d > t ? phaseOn(engineState(), p, d) : pastPhase(engineState(), p, k);
+  return `<div class="today"><b>${Cal.weekdayDayMonth(d)}</b></div><div class="muted" style="font-size:13px">${relDays(dayDiff(t, d))}${ph && PHASES[ph] ? '، ' + PHASES[ph].name : ''}</div>
+    <div class="big">${big}</div>${sub ? `<div class="muted" style="font-size:14px">${sub}</div>` : ''}
+    <div class="wc-actions">${you && d <= t ? `<button class="text-link" data-act="open-log" data-k="${k}">ثبت برای این روز</button>` : ''}<button class="text-link" data-act="wheel-today">برگشت به امروز</button></div>`;
+}
+function wheelSelect(idx, fromDrag) {
+  if (idx === WH.sel) return;
+  WH.sel = idx; const p = WH.p;
+  const a = (-90 + (idx + 0.5) * WH.step) * Math.PI / 180;
+  const mk = document.getElementById('wmark'); if (!mk) return;
+  mk.setAttribute('transform', `translate(${(WH.R * Math.cos(a)).toFixed(2)} ${(WH.R * Math.sin(a)).toFixed(2)})`);
+  document.getElementById('wm-day').textContent = fa(idx + 1);
+  mk.querySelector('.wm-ring').setAttribute('opacity', idx === WH.todayIdx ? 0 : 1);
+  const d = addDays(p.lastStart, idx);
+  WH.selKey = idx === WH.todayIdx ? null : toKey(d);
+  const c = document.getElementById('wcenter');
+  if (c) c.innerHTML = wheelCenterFor(p, d) || WH.todayCenter;
+  if (fromDrag) haptic();
+}
+let wheelDrag = null;
+function wheelPoint(e) {
+  const r = wheelDrag.svg.getBoundingClientRect();
+  const dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+  let ang = Math.atan2(dy, dx) * 180 / Math.PI + 90; if (ang < 0) ang += 360;
+  return Math.min(WH.N - 1, Math.floor(ang / WH.step));
+}
+document.addEventListener('pointerdown', e => {
+  const svg = e.target.closest && e.target.closest('.wheel svg[data-drag]'); if (!svg || !WH.p) return;
+  const r = svg.getBoundingClientRect(); const dist = Math.hypot(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2)) / (r.width / 340);
+  if (dist < WH.R - 45 || dist > WH.R + 45) return; // only the ring itself starts a drag
+  wheelDrag = { svg, id: e.pointerId }; try { svg.setPointerCapture(e.pointerId); } catch (_) {}
+  e.preventDefault();
+  if (WH.showHint) { WH.showHint = false; P.wheelHintSeen = true; savePrefs(); svg.querySelector('.wheel-hint-art')?.remove(); document.querySelector('.wheel-hint-pill')?.remove(); }
+  wheelSelect(wheelPoint(e), true);
+});
+document.addEventListener('pointermove', e => { if (wheelDrag && e.pointerId === wheelDrag.id) { e.preventDefault(); wheelSelect(wheelPoint(e), true); } }, { passive: false });
+const endDrag = e => { if (wheelDrag && e.pointerId === wheelDrag.id) wheelDrag = null; };
+document.addEventListener('pointerup', endDrag); document.addEventListener('pointercancel', endDrag);
 function emptyWheel() { let d = ''; for (let i = 0; i < 28; i++) { const a = (-90 + (i + .5) * 360 / 28) * Math.PI / 180; d += `<circle cx="${(108 * Math.cos(a)).toFixed(1)}" cy="${(108 * Math.sin(a)).toFixed(1)}" r="1.7" fill="var(--dot)"/>`; } return `<svg viewBox="-170 -170 340 340"><circle r="134" fill="none" stroke="var(--track)" stroke-width="25"/>${d}</svg>`; }
 
 function phaseSentence(p) {
@@ -756,9 +852,15 @@ function cycleHome(p) {
     else big = `<span class="num">${fa(p.daysToNext)}</span> روز تا پریود بعدی`;
     center = `<div class="today"><b>امروز</b>، ${Cal.dayMonth(t)}</div><div class="big">${big}</div><button class="text-link" data-act="phase-sheet">درباره‌ی این فاز ${ic('chevD')}</button>`;
   }
-  let html = `<section class="cycle-hero">${modePill()}<div class="wheel">${p.hasData ? wheelSVG(p) : emptyWheel()}<div class="wheel-center">${center}</div></div>${feelCard(log)}</section>`;
+  if (p.hasData && isHer() && !P.wheelHintSeen && !WH.showHint && !WH.hintShown) { WH.showHint = true; WH.hintShown = true; }
+  WH.todayCenter = center;
+  const wheelHtml = p.hasData ? wheelSVG(p) : emptyWheel();
+  const selCenter = p.hasData && WH.selKey ? wheelCenterFor(p, fromKey(WH.selKey)) : null;
+  let html = `<section class="cycle-hero">${modePill()}<div class="wheel">${wheelHtml}<div class="wheel-center" id="wcenter">${selCenter || center}</div></div>
+    ${WH.showHint ? `<div class="wheel-hint-pill"><span>دایره رو بکش تا روزهای قبل و بعد رو ببینی</span><button class="text-link" data-act="wheel-hint-ok">فهمیدم</button></div>` : ''}${feelCard(log)}</section>`;
   if (you && !(log && BLEED.includes(log.period))) html += `<button class="pill-btn blush block" data-act="quick-period">${p.inPeriod ? 'امروز هم پریودم' : 'پریودم امروز شروع شد'}</button>`;
   html += `<div><h2 class="sec-title">${phaseSentence(p)}</h2>${confidenceNote(p)}</div>`;
+  html += pushCardHtml(false);
   html += phaseInsightCard(p);
   if (p.mode === 'conceive') html += conceiveCard(p);
   if (you && S.profile.pill) {
@@ -1108,11 +1210,13 @@ function cycleSettingsSheet() {
 }
 function remindersSheet() {
   const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  const pushRow = pushCardHtml(true);
   const preg = mode() === 'pregnancy';
   openSheet(`${sheetHead('یادآورها')}<div class="sheet-body">
     <div class="card ${perm === 'granted' ? 'teal' : 'peach'}"><p style="font-size:14.5px">${perm === 'granted' ? 'اعلان‌ها روی این دستگاه فعال‌ان.' : perm === 'denied' ? 'اعلان‌ها در تنظیمات مرورگر مسدود شدن؛ یادآورها داخل اپ نشون داده می‌شن.' : perm === 'unsupported' ? 'این مرورگر از اعلان پشتیبانی نمی‌کنه؛ یادآورها داخل اپ نشون داده می‌شن.' : 'برای دریافت یادآور، اجازه‌ی اعلان بده.'}</p>
       ${perm === 'default' ? `<button class="pill-btn red block" style="margin-top:10px" data-act="notif-perm">اجازه‌ی اعلان</button>` : ''}
       <p class="data-meta">اعلان‌ها وقتی اپ بازه یا به‌تازگی باز شده ارسال می‌شن. برای اطمینان در پس‌زمینه، یادآورها رو به تقویم گوشی هم اضافه کن.</p></div>
+    ${pushRow}
     <div class="card white"><div class="list-row"><div class="main"><b>متن محرمانه</b><small>اعلان‌ها فقط «${DISCREET_TEXT}» نشون بدن</small></div><label class="switch"><input type="checkbox" data-act="discreet" ${P.discreet ? 'checked' : ''}><span></span></label></div></div>
     ${REMINDER_TYPES.map(r => { const c = S.reminders[r.id] || {}; const paused = preg && PAUSED_IN_PREGNANCY.includes(r.id); const pillOff = r.id === 'pill' && !S.profile.pill;
       return `<div class="card white ${paused || pillOff ? 'dim' : ''}"><div class="list-row"><div class="main"><b>${r.name}</b><small>${paused ? 'در بارداری متوقفه' : pillOff ? 'اول «قرص ضدبارداری» رو در منو روشن کن' : (r.custom === false ? 'ساعت و متن ثابت (۲۰:۰۰)' : '')}</small></div><label class="switch"><input type="checkbox" data-act="rem-on" data-id="${r.id}" ${c.on ? 'checked' : ''}><span></span></label></div>
@@ -1274,6 +1378,51 @@ function hisUs(p) {
   html += `<div class="center"><button class="text-link" style="color:var(--muted)" data-act="leave">قطع اتصال</button></div>`;
   return html;
 }
+// ---------- phone notifications ----------
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
+function pushCardHtml(inSheet) {
+  if (!CLOUD || !CFG.vapidKey) return '';
+  const supported = 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window;
+  if (P.pushOn && supported && Notification.permission === 'granted') return inSheet ? `<div class="card teal"><b style="font-weight:500">اعلان‌های گوشی روشنه</b><p class="data-meta">یادآورها و پیام‌ها حتی وقتی اپ بسته‌ست میان (معمولاً با چند دقیقه تأخیر).</p></div>` : '';
+  if (!inSheet && (P.pushAskAt && Date.now() - P.pushAskAt < 3 * 86400000)) return '';
+  if (!supported && isIOS() && !isStandalone()) return inSheet || !P.installSeen ? `<div class="card sky"><b style="font-weight:500">برای اعلان روی آیفون</b><p style="font-size:14px;color:var(--ink-2);margin-top:4px">اول Moon&Us رو از سافاری به صفحه‌ی اصلی اضافه کن (دکمه‌ی اشتراک، Add to Home Screen) و از همون آیکون بازش کن؛ بعد اینجا اعلان‌ها رو روشن کن.</p></div>` : '';
+  if (!supported) return inSheet ? `<div class="card"><p style="font-size:14px;color:var(--ink-2)">این مرورگر اعلان پشتیبانی نمی‌کنه.</p></div>` : '';
+  if (Notification.permission === 'denied') return inSheet ? `<div class="card peach"><p style="font-size:14px">اعلان‌ها در تنظیمات گوشی برای این اپ خاموشه. از تنظیمات گوشی روشنش کن.</p></div>` : '';
+  const who = isHer() ? (Object.keys(S.partners || {}).length ? `و پیام‌های ${pname()}` : '') : `و درخواست‌های ${herN()}`;
+  return `<div class="card sky push-card"><div class="row">${glyph('bell', '#E8A013')}<div style="flex:1"><b style="font-weight:500">اعلان‌ها رو روشن کن</b><div style="font-size:13.5px;color:var(--ink-2)">یادآورهای مهم ${who} حتی وقتی اپ بسته‌ست.</div></div></div>
+    <div class="btn-row" style="margin-top:12px"><button class="pill-btn red sm" data-act="push-on">روشن کن</button>${inSheet ? '' : `<button class="pill-btn ghost sm" data-act="push-later">بعداً</button>`}</div></div>`;
+}
+async function enablePushFlow() {
+  try {
+    if (!('Notification' in window)) { toast(isIOS() ? 'اول اپ رو به صفحه‌ی اصلی اضافه کن و از اونجا بازش کن' : 'این مرورگر اعلان پشتیبانی نمی‌کنه'); return; }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { toast('اجازه‌ی اعلان داده نشد'); render(); return; }
+    const reg = await withTimeout(navigator.serviceWorker.ready, 8000);
+    await withTimeout(Cloud.enablePush(ME.uid, CFG.vapidKey, reg), 20000);
+    if (P.discreet) Cloud.setPushDiscreet(ME.uid, true).catch(() => {});
+    P.pushOn = true; savePrefs(); uploadPushSchedule(true); toast('اعلان‌ها روشن شد'); render();
+    if ($('.sheet')) remindersSheet();
+  } catch (e) { console.error('push', e && (e.code || e.message)); toast('روشن کردن اعلان انجام نشد؛ دوباره امتحان کن'); }
+}
+let lastSchedule = '';
+function uploadPushSchedule(force) {
+  if (!CLOUD || !P.pushOn || !ME.uid || !ME.spaceId || screen !== 'app') return;
+  let items = [];
+  if (isHer()) {
+    items = upcomingReminders(14).filter(r => r.type !== 'daily_checkin' || (S.reminders.daily_checkin || {}).on).map(r => ({ id: r.id, at: r.when.getTime(), body: reminderText(r) }));
+    // locked surprises: tell her the morning they open
+    for (const g of S.gifts || []) if (g.unlockAt && !g.openedAt && g.unlockAt >= toKey(todayDate())) { const d = fromKey(g.unlockAt); items.push({ id: 'unlock-' + g.id, at: new Date(d.getFullYear(), d.getMonth(), d.getDate(), 9, 0).getTime(), body: P.discreet ? DISCREET_TEXT : `یه سورپرایز از طرف ${g.fromName || pname()} امروز برات باز شد` }); }
+  }
+  const sig = JSON.stringify(items);
+  if (!force && sig === lastSchedule) return;
+  lastSchedule = sig;
+  Cloud.savePushSchedule(ME.uid, items).catch(e => console.error('schedule', e && e.code));
+}
+function pushEvent(to, title, body, tag, route) {
+  if (!CLOUD || !ME.spaceId) return;
+  Cloud.addOutbox(ME.spaceId, { from: ME.uid, to, title: String(title).slice(0, 60), body: String(body).slice(0, 180), tag, url: './index.html#' + (route || 'cycle') }).catch(e => console.error('outbox', e && e.code));
+}
+
 function requestsBanner() {
   const act = activeRequests().filter(r => r.status === 'open'); if (!act.length) return '';
   const r = act[0]; const R = REQ_BY_ID[r.kind];
@@ -1542,7 +1691,9 @@ const A = {
   'look-sheet': () => lookSheet(),
   pref: el => { P[el.dataset.k] = el.dataset.v; savePrefs(); applyPrefs(); lookSheet(); render(); },
   'show-drafts': el => { P.showDrafts = el.checked; savePrefs(); render(); },
-  discreet: el => { P.discreet = el.checked; savePrefs(); scheduleReminders(); },
+  discreet: el => { P.discreet = el.checked; savePrefs(); scheduleReminders(); if (CLOUD && P.pushOn) Cloud.setPushDiscreet(ME.uid, P.discreet).catch(() => {}); },
+  'push-on': () => enablePushFlow(),
+  'push-later': () => { P.pushAskAt = Date.now(); savePrefs(); render(); },
   'pin-sheet': () => pinSheet(),
   'pin-set': () => { const v = toLatinDigits($('#pin-in').value.trim()); if (!/^\d{4}$/.test(v)) return toast('رمز باید ۴ رقم باشه'); P.pin = hashPin(v); savePrefs(); unlocked = true; try { sessionStorage.setItem('moonus.unlocked', '1'); } catch (e) {} closeSheet(); toast('قفل فعال شد'); },
   'pin-off': () => { P.pin = null; savePrefs(); closeSheet(); toast('قفل غیرفعال شد'); },
@@ -1586,6 +1737,8 @@ const A = {
   compose: () => composeSheet(),
   'compose-send': () => { const t = $('#compose-text').value.trim(); if (!t) return; DB.addNote(t); closeSheet(); toast('یادداشت فرستاده شد'); },
 
+  'wheel-today': () => { if (WH.p) wheelSelect(WH.todayIdx, false); WH.selKey = null; },
+  'wheel-hint-ok': () => { WH.showHint = false; P.wheelHintSeen = true; savePrefs(); render(); },
   'rep-opt': el => { rep[el.dataset.k] = el.checked; render(); },
   'rep-print': () => window.print(),
   ics: () => { const ics = buildICS(); if (!ics) return toast('هنوز چیزی برای افزودن به تقویم نیست'); download('moon-and-us.ics', ics, 'text/calendar'); toast('فایل تقویم دانلود شد؛ بازش کن تا اضافه بشه'); },

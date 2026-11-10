@@ -22,6 +22,10 @@ service cloud.firestore {
 
     match /users/{uid} {
       allow read, write: if signedIn() && request.auth.uid == uid;
+      // her upcoming reminder times + text, read by the notification sender (admin) only
+      match /push/{doc} {
+        allow read, write: if signedIn() && request.auth.uid == uid;
+      }
     }
 
     match /invites/{code} {
@@ -119,6 +123,14 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'ackAt'])
             && request.resource.data.status in ['seen', 'onit', 'done']);
         allow delete: if isOwner(sid);
+      }
+      // Short notification events for the other person. Write-only for clients; the sender delivers and deletes them.
+      match /outbox/{evId} {
+        allow create: if signedIn()
+          && request.resource.data.from == request.auth.uid
+          && request.resource.data.keys().hasOnly(['from', 'to', 'title', 'body', 'tag', 'url', 'at'])
+          && request.resource.data.body is string && request.resource.data.body.size() <= 200
+          && ((request.resource.data.to == 'partners' && isOwner(sid)) || (request.resource.data.to == 'owner' && isViewer(sid)));
       }
       match /notes/{noteId} {
         allow read: if isMember(sid);
