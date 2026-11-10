@@ -11,7 +11,7 @@ export async function init(cfg, opts = {}) {
   A = authM; F = fsM;
   const app = appM.initializeApp(cfg); appRef = app;
   auth = A.getAuth(app);
-  try { db = F.initializeFirestore(app, { experimentalAutoDetectLongPolling: true, localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) }); }
+  try { db = F.initializeFirestore(app, { experimentalForceLongPolling: true, localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) }); }
   catch (e) { db = F.getFirestore(app); }
   if (opts.emulator) { A.connectAuthEmulator(auth, opts.emulator.auth, { disableWarnings: true }); F.connectFirestoreEmulator(db, opts.emulator.host, opts.emulator.port); }
 }

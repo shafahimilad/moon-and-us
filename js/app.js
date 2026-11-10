@@ -1586,7 +1586,7 @@ const A = {
   'invite-login': () => { authCtx = 'partner'; authMode = 'login'; authError = ''; screen = 'auth'; render(); },
   'invite-decline': () => { clearInvite(); screen = ME.uid ? (ME.spaceId ? 'app' : ME.role === 'her' ? 'onboard' : 'disconnected') : 'welcome'; render(); },
   'invite-accept': async () => { busy = true; render(); try { await acceptInvite(ME.name); } catch (e) { console.error('join', e && e.code); toast('اتصال انجام نشد. شاید لینک قبلاً استفاده شده.'); } busy = false; render(); },
-  invite: async () => { busy = true; render(); try { await Cloud.createInvite(ME.spaceId, ME.uid, S.herName); } catch (e) { console.error('invite', e && e.code); toast('ساخت دعوت انجام نشد'); } busy = false; render(); },
+  invite: async () => { busy = true; render(); try { await withTimeout(Cloud.createInvite(ME.spaceId, ME.uid, S.herName), 20000); } catch (e) { console.error('invite', e && e.code); toast(e && e.code === 'timeout' ? 'اتصال به سرور برقرار نشد؛ اپ رو کامل ببند و دوباره باز کن' : 'ساخت دعوت انجام نشد'); } busy = false; render(); },
   'invite-share': () => shareText(`${S.herName} تو رو به Moon&Us دعوت کرده تا چرخه‌اش رو با هم دنبال کنید:\n${inviteUrl(S.inviteCode)}`, 'دعوت به Moon&Us'),
   'invite-copy': async () => { if (await copyText(inviteUrl(S.inviteCode))) toast('لینک کپی شد'); },
   'invite-cancel': () => { const c = S.inviteCode; DB.space({ inviteCode: null }); if (CLOUD && c) Cloud.deleteInvite(c); },

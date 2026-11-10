@@ -1,5 +1,5 @@
 // Moon&Us service worker — offline app shell + best-effort reminder delivery
-const CACHE = 'moonus-v7';
+const CACHE = 'moonus-v8';
 const SHELL = [
   './', './index.html', './css/style.css', './js/content.js', './js/cycle.js', './js/app.js', './js/insights.js',
   './js/cloud.js', './js/firebase-config.js', './manifest.webmanifest', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png',
