@@ -122,3 +122,14 @@ test('requests: only she creates; partner can only acknowledge', async () => {
   await assertFails(updateDoc(doc(him, 'spaces', SID, 'requests', ref.id), { kind: 'space' }));
   await assertFails(updateDoc(doc(him, 'spaces', SID, 'requests', ref.id), { status: 'open' }));
 });
+
+test('first-time setup: queued writes (no waiting) pass in order, and repeating is safe', async () => {
+  const uid = 'newher'; const db = as(uid);
+  const run = () => { const a = setDoc(doc(db, 'spaces', uid), { ownerUid: uid, herName: 'B', partners: {}, inviteCode: null, createdAt: 1 });
+    const b = writeBatch(db); b.set(doc(db, 'spaces', uid, 'private', 'settings'), { profile: {} }); b.set(doc(db, 'spaces', uid, 'logs', '2026-11-01'), { period: 'medium' }); const c = b.commit();
+    const d = setDoc(doc(db, 'users', uid), { role: 'her', spaceId: uid }, { merge: true }); return Promise.all([a, c, d]); };
+  await assertSucceeds(run());
+  await assertSucceeds(run());
+  await assertSucceeds(getDoc(doc(db, 'spaces', uid, 'private', 'settings')));
+  await assertFails(setDoc(doc(as('other'), 'spaces', uid), { ownerUid: 'other', herName: 'X', partners: {}, inviteCode: null }));
+});

@@ -59,6 +59,12 @@ function migrate(s) {
   return out;
 }
 function loadCache() { try { const s = JSON.parse(localStorage.getItem(cacheKey()) || 'null'); if (s) S = migrate(s); } catch (e) {} }
+const onbKey = () => 'moonus.onb.' + (ME.uid || 'local');
+function saveOnb() { try { const { codeError, ...keep } = onb; localStorage.setItem(onbKey(), JSON.stringify(keep)); } catch (e) {} }
+function loadOnb() { try { return JSON.parse(localStorage.getItem(onbKey()) || 'null'); } catch (e) { return null; } }
+function clearOnb() { try { localStorage.removeItem(onbKey()); } catch (e) {} }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const withTimeout = (p, ms) => Promise.race([p, sleep(ms).then(() => { const e = new Error('timeout'); e.code = 'timeout'; throw e; })]);
 const engineState = () => ({ logs: S.logs, profile: S.profile, modeHistory: S.modeHistory, pregnancy: S.pregnancy, intervals: S.intervals, ovObserved: S.ovObserved || [] });
 const mode = () => currentMode(engineState());
 
@@ -101,7 +107,7 @@ const AUTH_ERR = {
   'auth/invalid-email': 'ایمیل درست نیست.', 'auth/weak-password': 'رمز باید حداقل ۶ کاراکتر باشه.',
   'auth/invalid-credential': 'ایمیل یا رمز اشتباهه.', 'auth/wrong-password': 'ایمیل یا رمز اشتباهه.',
   'auth/user-not-found': 'حسابی با این ایمیل پیدا نشد.', 'auth/too-many-requests': 'تلاش زیاد بود. چند دقیقه بعد دوباره امتحان کن.',
-  'auth/network-request-failed': 'اتصال اینترنت برقرار نیست.', 'auth/requires-recent-login': 'برای این کار یه بار خارج شو و دوباره وارد شو.',
+  'auth/network-request-failed': 'اتصال اینترنت برقرار نیست.', timeout: 'اتصال به سرور خیلی کند بود. اینترنت رو چک کن و دوباره امتحان کن.', 'auth/requires-recent-login': 'برای این کار یه بار خارج شو و دوباره وارد شو.',
 };
 const errMsg = e => AUTH_ERR[e && e.code] || 'یه مشکلی پیش اومد. دوباره امتحان کن.';
 let syncWarned = false;
@@ -353,7 +359,7 @@ function render() {
     case 'boot': html = `<div class="boot">${logo('lg')}<div class="spinner"></div></div>`; break;
     case 'welcome': html = welcomeView(); break;
     case 'auth': html = authView(); break;
-    case 'onboard': html = onboardView(); break;
+    case 'onboard': html = onboardView(); if (ME.uid) saveOnb(); break;
     case 'invite': html = inviteView(); break;
     case 'disconnected': html = disconnectedView(); break;
     case 'error': html = `<div class="boot">${logo('lg')}<p class="muted center">اتصال به سرور برقرار نشد.<br>اینترنت رو چک کن و صفحه رو دوباره باز کن.</p><button class="pill-btn red" data-act="reload">تلاش دوباره</button></div>`; break;
@@ -436,7 +442,11 @@ async function handleAuth(user) {
   if (pendingInvite && (!u || u.role === 'partner')) { ME.role = 'partner'; ME.name = (u && u.name) || ''; screen = 'invite'; render(); return; }
   if (!u || !u.spaceId) {
     if (u && u.role === 'partner') { ME.role = 'partner'; ME.name = u.name || ''; screen = 'disconnected'; render(); return; }
-    ME.role = 'her'; if (screen !== 'onboard') onb = freshOnb(); screen = 'onboard'; render(); return;
+    ME.role = 'her';
+    if (screen !== 'onboard') { const saved = loadOnb(); onb = saved ? { ...freshOnb(), ...saved, consent: { ...freshOnb().consent, ...(saved.consent || {}) } } : freshOnb(); }
+    screen = 'onboard'; render();
+    if (onb.done) finishOnboarding();
+    return;
   }
   ME.role = u.role; ME.spaceId = u.spaceId; ME.name = u.name || '';
   loadCache(); screen = 'app'; route = routeFromHash() || 'cycle';
@@ -444,7 +454,7 @@ async function handleAuth(user) {
 }
 async function acceptInvite(name) {
   const inv = pendingInvite.data;
-  await Cloud.joinSpace(pendingInvite.code, inv, ME.uid, name || ME.name || '');
+  await withTimeout(Cloud.joinSpace(pendingInvite.code, inv, ME.uid, name || ME.name || ''), 20000);
   ME.spaceId = inv.spaceId; ME.role = 'partner'; ME.name = name || ME.name; holdAuth = false;
   const herName = inv.herName; clearInvite();
   screen = 'app'; route = 'cycle'; history.replaceState(null, '', '#cycle');
@@ -597,7 +607,7 @@ async function joinWithCode() {
   if (!name) { onb.codeError = 'اسمت رو بنویس.'; return render(); }
   busy = true; render();
   try {
-    const inv = await Cloud.getInvite(raw);
+    const inv = await withTimeout(Cloud.getInvite(raw), 15000);
     if (!inv || inv.usedBy) { onb.codeError = 'این کد معتبر نیست یا قبلاً استفاده شده.'; busy = false; return render(); }
     if (inv.ownerUid === ME.uid) { onb.codeError = 'این کد مال حساب خودته.'; busy = false; return render(); }
     pendingInvite = { code: raw, data: inv }; holdAuth = true;
@@ -617,14 +627,15 @@ async function finishOnboarding() {
   const modeHistory = [{ mode: 'period', from: '1900-01-01' }]; if (m !== 'period') modeHistory.push({ mode: m, from: toKey(t) });
   const reminders = JSON.parse(JSON.stringify(DEFAULT_REMINDERS)); if (profile.pill) reminders.pill.on = true;
   const settings = { profile, modeHistory, pregnancy, pregHistory: [], intervals, tags: [], reminders };
-  busy = true; render();
+  busy = true; onb.done = true; saveOnb(); render();
   try {
     if (CLOUD) {
-      holdAuth = true;
-      const sid = await Cloud.createSpace(ME.uid, name, settings, logs);
-      await Cloud.setUserDoc(ME.uid, { spaceId: sid, role: 'her', name, consent: { v: 1, at: Date.now() } });
-      ME.spaceId = sid; ME.role = 'her'; ME.name = name; holdAuth = false;
+      const { sid, done } = Cloud.setupOwner(ME.uid, name, settings, logs, { role: 'her', name, consent: { v: 1, at: Date.now() } });
+      done.then(() => clearOnb()).catch(e => { console.error('setup sync', e && e.code); toast('ذخیره در سرور انجام نشد؛ دفعه‌ی بعد که اپ رو باز کنی دوباره امتحان می‌شه'); });
+      ME.spaceId = sid; ME.role = 'her'; ME.name = name;
       S = { ...emptyState(), ...settings, herName: name, logs, onboarded: true }; startWatch();
+      const synced = await Promise.race([done.then(() => true, () => true), sleep(5000).then(() => false)]);
+      if (!synced) toast('اینترنت کنده؛ اطلاعاتت روی گوشی ذخیره شده و خودکار فرستاده می‌شه');
     } else { S = { ...emptyState(), ...settings, herName: name, logs, onboarded: true }; ME = { uid: 'local', role: 'her', spaceId: 'local', name, email: '' }; }
     saveCache(); screen = 'app'; route = 'cycle'; history.replaceState(null, '', '#cycle'); scheduleReminders();
     setTimeout(maybeInstallPrompt, 1500);

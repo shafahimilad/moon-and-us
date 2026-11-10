@@ -11,7 +11,7 @@ export async function init(cfg, opts = {}) {
   A = authM; F = fsM;
   const app = appM.initializeApp(cfg);
   auth = A.getAuth(app);
-  try { db = F.initializeFirestore(app, { localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) }); }
+  try { db = F.initializeFirestore(app, { experimentalAutoDetectLongPolling: true, localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) }); }
   catch (e) { db = F.getFirestore(app); }
   if (opts.emulator) { A.connectAuthEmulator(auth, opts.emulator.auth, { disableWarnings: true }); F.connectFirestoreEmulator(db, opts.emulator.host, opts.emulator.port); }
 }
@@ -42,6 +42,19 @@ export async function createSpace(uid, herName, settings, logs) {
   for (const [k, l] of Object.entries(logs || {})) batch.set(sub(ref.id, 'logs', k), l);
   await batch.commit();
   return ref.id;
+}
+/** Her first-time setup. The space id is her uid, so repeating the setup is safe (no duplicates).
+    Writes are queued in order (space, then settings/logs, then her pointer) without waiting for the
+    server; they apply locally at once. `done` resolves when the server has confirmed all of them. */
+export function setupOwner(uid, herName, settings, logs, userDoc) {
+  const sid = uid;
+  const p1 = F.setDoc(spaceRef(sid), { ownerUid: uid, herName, partners: {}, inviteCode: null, createdAt: Date.now() });
+  const batch = F.writeBatch(db);
+  batch.set(sub(sid, 'private', 'settings'), settings);
+  for (const [k, l] of Object.entries(logs || {})) batch.set(sub(sid, 'logs', k), l);
+  const p2 = batch.commit();
+  const p3 = F.setDoc(userRef(uid), { ...userDoc, spaceId: sid }, { merge: true });
+  return { sid, done: Promise.all([p1, p2, p3]) };
 }
 export const updateSpace = (sid, patch) => F.updateDoc(spaceRef(sid), patch);
 export const saveSettings = (sid, settings) => F.setDoc(sub(sid, 'private', 'settings'), settings, { merge: true });
